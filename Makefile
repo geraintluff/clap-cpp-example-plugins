@@ -20,6 +20,9 @@ vst3-%: out/build
 	mkdir -p `dirname "$@"`
 	echo "<REAPER_PROJECT 0.1\n>" > "$@"
 
+reaper-rescan-clap:
+	rm -f ~/Library/Application\ Support/REAPER/reaper-clap-*.ini
+
 dev-%: clap-%
 	$(MAKE) out/REAPER/$*.RPP
 	# Symlink the plugin

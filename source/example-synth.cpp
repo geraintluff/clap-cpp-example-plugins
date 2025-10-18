@@ -5,33 +5,85 @@
 
 #include "clap/clap.h"
 
-static std::string resourceDir;
+struct ExampleSynth {
+	static const clap_plugin_descriptor * pluginDescriptor() {
+		static const char * features[] = {
+			CLAP_PLUGIN_FEATURE_INSTRUMENT,
+			CLAP_PLUGIN_FEATURE_STEREO,
+			nullptr
+		};
+		static clap_plugin_descriptor descriptor{
+			.id="uk.co.signalsmith-audio.plugins.example-synth",
+			.name="Example Synth",
+			.vendor="Signalsmith Audio",
+			.url=nullptr,
+			.manual_url=nullptr,
+			.support_url=nullptr,
+			.version="1.0.0",
+			.description="The synth from a starter CLAP project",
+			.features=features
+		};
+		return &descriptor;
+	};
+	
+	static const clap_plugin * create(const clap_host *host) {
+		return new clap_plugin({
+			.desc=pluginDescriptor(),
+			.plugin_data=new ExampleSynth(host),
+			.init=pluginInit,
+			.destroy=pluginDestroy,
+			.activate=pluginActivate,
+			.deactivate=pluginDeactivate,
+			.start_processing=pluginStartProcessing,
+			.stop_processing=pluginStopProcessing,
+			.reset=pluginReset,
+			.process=pluginProcess,
+			.get_extension=pluginGetExtension,
+			.on_main_thread=pluginOnMainThread
+		});
+	}
+	
+	const clap_host *host;
 
-bool clap_init(const char *path) {
-	resourceDir = path;
-	LOG_EXPR(resourceDir);
-	return true;
-//	plugins.add<stfx_sfz::SFZ_STFX>({
-//		.clap_version = CLAP_VERSION,
-//		.id = "uk.co.signalsmith.dev.stfx-sfz",
-//		.name = "STFX - SFZ test",
-//		.vendor = "Signalsmith Audio",
-//		.url = "",
-//		.manual_url = "",
-//		.support_url = "",
-//		.version = "1.0.0"
-//	}, {
-//		CLAP_PLUGIN_FEATURE_INSTRUMENT,
-//		CLAP_PLUGIN_FEATURE_SAMPLER,
-//		CLAP_PLUGIN_FEATURE_STEREO
-//	});
-//
-//	return plugins.clap_init(path);
-}
-void clap_deinit() {
-//	plugins.clap_deinit();
-}
-const void * clap_get_factory(const char *id) {
-	return nullptr;
-//	return plugins.clap_get_factory(id);
-}
+	ExampleSynth(const clap_host *host) : host(host) {
+		
+	}
+	
+	static bool pluginInit(const clap_plugin *plugin) {
+		auto &self = *(ExampleSynth *)plugin->plugin_data;
+		return true;
+	}
+	static void pluginDestroy(const clap_plugin *plugin) {
+		delete (ExampleSynth *)plugin->plugin_data;
+		delete plugin;
+	}
+	static bool pluginActivate(const clap_plugin *plugin, double sampleRate, uint32_t minFrames, uint32_t maxFrames) {
+		return true;
+	}
+	static void pluginDeactivate(const clap_plugin *plugin) {
+	}
+	static bool pluginStartProcessing(const clap_plugin *plugin) {
+		return true;
+	}
+	static void pluginStopProcessing(const clap_plugin *plugin) {
+	}
+	static void pluginReset(const clap_plugin *plugin) {
+	}
+	static clap_process_status pluginProcess(const clap_plugin *plugin, const clap_process *process) {
+		return CLAP_PROCESS_CONTINUE;
+	}
+	static const void * pluginGetExtension(const clap_plugin *plugin, const char *extId) {
+		return nullptr;
+	}
+	static void pluginOnMainThread(const clap_plugin *plugin) {
+	}
+};
+
+#include "./plugin-list.h"
+
+std::vector<RegisteredPlugin> registeredPlugins = {
+	{
+		ExampleSynth::pluginDescriptor(),
+		ExampleSynth::create
+	}
+};
