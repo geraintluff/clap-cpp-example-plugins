@@ -27,6 +27,7 @@ set(CLAP_BUNDLE_PREFIX "uk.co.signalsmith-audio.plugins")
 set(CLAP_LINK_LIBRARIES clap)
 
 # Add extra dependencies
+add_subdirectory(modules/cbor-walker)
 FetchContent_Declare(
 	webview-gui
 	GIT_REPOSITORY https://github.com/geraintluff/webview-gui.git
@@ -34,6 +35,7 @@ FetchContent_Declare(
 	GIT_SHALLOW ON
 )
 FetchContent_MakeAvailable(webview-gui)
+list(APPEND CLAP_LINK_LIBRARIES webview-gui cbor-walker)
 
 ################ CLAP & wrappers
 

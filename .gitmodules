@@ -1,0 +1,3 @@
+[submodule "modules/webview-gui"]
+	path = modules/webview-gui
+	url = https://github.com/geraintluff/webview-gui.git

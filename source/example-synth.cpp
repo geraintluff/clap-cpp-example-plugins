@@ -5,7 +5,8 @@
 
 #include "clap/clap.h"
 
-#include "./wrap-plugin-method.h"
+#include "./clap-extras.h"
+#include "./clap-cbor.h"
 
 struct ExampleSynth {
 	static const clap_plugin_descriptor * getPluginDescriptor() {
@@ -41,16 +42,16 @@ struct ExampleSynth {
 	const clap_plugin clapPlugin{
 		.desc=getPluginDescriptor(),
 		.plugin_data=this,
-		.init=wrapPluginMethod<&ExampleSynth::pluginInit>(),
-		.destroy=wrapPluginMethod<&ExampleSynth::pluginDestroy>(),
-		.activate=wrapPluginMethod<&ExampleSynth::pluginActivate>(),
-		.deactivate=wrapPluginMethod<&ExampleSynth::pluginDeactivate>(),
-		.start_processing=wrapPluginMethod<&ExampleSynth::pluginStartProcessing>(),
-		.stop_processing=wrapPluginMethod<&ExampleSynth::pluginStopProcessing>(),
-		.reset=wrapPluginMethod<&ExampleSynth::pluginReset>(),
-		.process=wrapPluginMethod<&ExampleSynth::pluginProcess>(),
-		.get_extension=wrapPluginMethod<&ExampleSynth::pluginGetExtension>(),
-		.on_main_thread=wrapPluginMethod<&ExampleSynth::pluginOnMainThread>()
+		.init=clapPluginMethod<&ExampleSynth::pluginInit>(),
+		.destroy=clapPluginMethod<&ExampleSynth::pluginDestroy>(),
+		.activate=clapPluginMethod<&ExampleSynth::pluginActivate>(),
+		.deactivate=clapPluginMethod<&ExampleSynth::pluginDeactivate>(),
+		.start_processing=clapPluginMethod<&ExampleSynth::pluginStartProcessing>(),
+		.stop_processing=clapPluginMethod<&ExampleSynth::pluginStopProcessing>(),
+		.reset=clapPluginMethod<&ExampleSynth::pluginReset>(),
+		.process=clapPluginMethod<&ExampleSynth::pluginProcess>(),
+		.get_extension=clapPluginMethod<&ExampleSynth::pluginGetExtension>(),
+		.on_main_thread=clapPluginMethod<&ExampleSynth::pluginOnMainThread>()
 	};
 
 	bool pluginInit() {
@@ -81,8 +82,8 @@ struct ExampleSynth {
 	const void * pluginGetExtension(const char *extId) {
 		if (!std::strcmp(extId, CLAP_EXT_STATE)) {
 			static const clap_plugin_state ext{
-				.save=wrapPluginMethod<&ExampleSynth::stateSave>(),
-				.load=wrapPluginMethod<&ExampleSynth::stateLoad>(),
+				.save=clapPluginMethod<&ExampleSynth::stateSave>(),
+				.load=clapPluginMethod<&ExampleSynth::stateLoad>(),
 			};
 			return &ext;
 		}
@@ -90,9 +91,13 @@ struct ExampleSynth {
 	}
 	
 	bool stateSave(const clap_ostream_t *stream) {
-		return true;
+		std::string stateString = "Hello, world!";
+		return writeAllToStream(stateString, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
+		std::string stateString;
+		if (!readAllFromStream(stateString, stream)) return false;
+LOG_EXPR(stateString);
 		return true;
 	}
 };
