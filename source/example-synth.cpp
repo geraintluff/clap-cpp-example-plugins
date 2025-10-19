@@ -5,8 +5,10 @@
 
 #include "clap/clap.h"
 
+#include "./wrap-plugin-method.h"
+
 struct ExampleSynth {
-	static const clap_plugin_descriptor * pluginDescriptor() {
+	static const clap_plugin_descriptor * getPluginDescriptor() {
 		static const char * features[] = {
 			CLAP_PLUGIN_FEATURE_INSTRUMENT,
 			CLAP_PLUGIN_FEATURE_STEREO,
@@ -25,57 +27,73 @@ struct ExampleSynth {
 		};
 		return &descriptor;
 	};
-	
+
 	static const clap_plugin * create(const clap_host *host) {
-		return new clap_plugin({
-			.desc=pluginDescriptor(),
-			.plugin_data=new ExampleSynth(host),
-			.init=pluginInit,
-			.destroy=pluginDestroy,
-			.activate=pluginActivate,
-			.deactivate=pluginDeactivate,
-			.start_processing=pluginStartProcessing,
-			.stop_processing=pluginStopProcessing,
-			.reset=pluginReset,
-			.process=pluginProcess,
-			.get_extension=pluginGetExtension,
-			.on_main_thread=pluginOnMainThread
-		});
+		return &(new ExampleSynth(host))->clapPlugin;
 	}
-	
+
 	const clap_host *host;
 
 	ExampleSynth(const clap_host *host) : host(host) {
 		
 	}
 	
-	static bool pluginInit(const clap_plugin *plugin) {
-		auto &self = *(ExampleSynth *)plugin->plugin_data;
+	const clap_plugin clapPlugin{
+		.desc=getPluginDescriptor(),
+		.plugin_data=this,
+		.init=wrapPluginMethod<&ExampleSynth::pluginInit>(),
+		.destroy=wrapPluginMethod<&ExampleSynth::pluginDestroy>(),
+		.activate=wrapPluginMethod<&ExampleSynth::pluginActivate>(),
+		.deactivate=wrapPluginMethod<&ExampleSynth::pluginDeactivate>(),
+		.start_processing=wrapPluginMethod<&ExampleSynth::pluginStartProcessing>(),
+		.stop_processing=wrapPluginMethod<&ExampleSynth::pluginStopProcessing>(),
+		.reset=wrapPluginMethod<&ExampleSynth::pluginReset>(),
+		.process=wrapPluginMethod<&ExampleSynth::pluginProcess>(),
+		.get_extension=wrapPluginMethod<&ExampleSynth::pluginGetExtension>(),
+		.on_main_thread=wrapPluginMethod<&ExampleSynth::pluginOnMainThread>()
+	};
+
+	bool pluginInit() {
+		// This is a normal C++ method
 		return true;
 	}
-	static void pluginDestroy(const clap_plugin *plugin) {
-		delete (ExampleSynth *)plugin->plugin_data;
-		delete plugin;
+	void pluginDestroy() {
+		delete this;
 	}
-	static bool pluginActivate(const clap_plugin *plugin, double sampleRate, uint32_t minFrames, uint32_t maxFrames) {
+	bool pluginActivate(double sampleRate, uint32_t minFrames, uint32_t maxFrames) {
 		return true;
 	}
-	static void pluginDeactivate(const clap_plugin *plugin) {
+	void pluginDeactivate() {
 	}
-	static bool pluginStartProcessing(const clap_plugin *plugin) {
+	bool pluginStartProcessing() {
 		return true;
 	}
-	static void pluginStopProcessing(const clap_plugin *plugin) {
+	void pluginStopProcessing() {
 	}
-	static void pluginReset(const clap_plugin *plugin) {
+	void pluginReset() {
 	}
-	static clap_process_status pluginProcess(const clap_plugin *plugin, const clap_process *process) {
+	clap_process_status pluginProcess(const clap_process *process) {
 		return CLAP_PROCESS_CONTINUE;
 	}
-	static const void * pluginGetExtension(const clap_plugin *plugin, const char *extId) {
+	void pluginOnMainThread() {
+	}
+
+	const void * pluginGetExtension(const char *extId) {
+		if (!std::strcmp(extId, CLAP_EXT_STATE)) {
+			static const clap_plugin_state ext{
+				.save=wrapPluginMethod<&ExampleSynth::stateSave>(),
+				.load=wrapPluginMethod<&ExampleSynth::stateLoad>(),
+			};
+			return &ext;
+		}
 		return nullptr;
 	}
-	static void pluginOnMainThread(const clap_plugin *plugin) {
+	
+	bool stateSave(const clap_ostream_t *stream) {
+		return true;
+	}
+	bool stateLoad(const clap_istream_t *stream) {
+		return true;
 	}
 };
 
@@ -83,7 +101,7 @@ struct ExampleSynth {
 
 std::vector<RegisteredPlugin> registeredPlugins = {
 	{
-		ExampleSynth::pluginDescriptor(),
+		ExampleSynth::getPluginDescriptor(),
 		ExampleSynth::create
 	}
 };

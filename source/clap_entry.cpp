@@ -2,6 +2,8 @@
 
 #include "./plugin-list.h"
 
+#include <string>
+
 static std::string clapBundleResourceDir;
 const char * clap_module_resources() {
 	return clapBundleResourceDir.c_str();
@@ -32,7 +34,7 @@ static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_
 
 static bool clap_init(const char *path) {
 	clapBundleResourceDir = path;
-#if __APPLE__ && TARGET_OS_MAC
+#if defined(__APPLE__) && __APPLE__ && defined(TARGET_OS_OSX) && TARGET_OS_OSX
 	clapBundleResourceDir += "/Contents/Resources";
 #endif
 	return true;
