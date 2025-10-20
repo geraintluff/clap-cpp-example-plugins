@@ -1,3 +1,6 @@
 [submodule "modules/webview-gui"]
 	path = modules/webview-gui
 	url = https://github.com/geraintluff/webview-gui.git
+[submodule "modules/cbor-walker"]
+	path = modules/cbor-walker
+	url = https://github.com/geraintluff/cbor-walker.git

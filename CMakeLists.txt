@@ -28,13 +28,7 @@ set(CLAP_LINK_LIBRARIES clap)
 
 # Add extra dependencies
 add_subdirectory(modules/cbor-walker)
-FetchContent_Declare(
-	webview-gui
-	GIT_REPOSITORY https://github.com/geraintluff/webview-gui.git
-	GIT_TAG snapshot-2025-10-16
-	GIT_SHALLOW ON
-)
-FetchContent_MakeAvailable(webview-gui)
+add_subdirectory(modules/webview-gui)
 list(APPEND CLAP_LINK_LIBRARIES webview-gui cbor-walker)
 
 ################ CLAP & wrappers

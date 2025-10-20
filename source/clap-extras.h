@@ -24,7 +24,7 @@ struct ClapPluginMethodHelper<Return (Object::*)(Args...)> {
 	}
 };
 
-// ---- read/write `std::vector` using CLAP stream(s) ----
+// ---- read/write `std::vector`/`std::string` using CLAP stream(s) ----
 
 template<class Container>
 bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
@@ -45,13 +45,12 @@ template<class Container>
 bool readAllFromStream(Container &byteContainer, const clap_istream *istream, size_t chunkBytes=1024) {
 	while (1) {
 		size_t index = byteContainer.size();
-		vector.resize(index + chunkBytes);
-		int64_t result = istream->read(istream, (void *)((size_t)container.data() + bytes), uint64_t(chunkBytes));
+		byteContainer.resize(index + chunkBytes);
+		int64_t result = istream->read(istream, (void *)&byteContainer[index], uint64_t(chunkBytes));
 		if (result == chunkBytes) {
 			continue;
 		} else if (result >= 0) {
-			bytes += result;
-			vector.resize(index + result);
+			byteContainer.resize(index + result);
 			if (result == 0) return true;
 		} else {
 			return false;

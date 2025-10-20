@@ -8,6 +8,8 @@
 #include "./clap-extras.h"
 #include "./clap-cbor.h"
 
+#include <cstring>
+
 struct ExampleSynth {
 	static const clap_plugin_descriptor * getPluginDescriptor() {
 		static const char * features[] = {
@@ -74,6 +76,26 @@ struct ExampleSynth {
 	void pluginReset() {
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
+		for (uint32_t outPort = 0; outPort < process->audio_outputs_count; ++outPort) {
+			auto &outBuffer = process->audio_outputs[outPort];
+			if (outPort < process->audio_inputs_count) {
+				auto &inBuffer = process->audio_inputs[outPort];
+				// Copy input
+				for (uint32_t outC = 0; outC < outBuffer.channel_count; ++outC) {
+					uint32_t inC = outC%(inBuffer.channel_count);
+					if (outBuffer.data32 && inBuffer.data32) {
+						memcpy(outBuffer.data32[outC], inBuffer.data32[inC], process->frames_count*4);
+					}
+				}
+			} else {
+				// Zero
+				for (uint32_t outC = 0; outC < outBuffer.channel_count; ++outC) {
+					if (outBuffer.data32) {
+						memset(outBuffer.data32[outC], 0, process->frames_count*4);
+					}
+				}
+			}
+		}
 		return CLAP_PROCESS_CONTINUE;
 	}
 	void pluginOnMainThread() {
@@ -97,7 +119,6 @@ struct ExampleSynth {
 	bool stateLoad(const clap_istream_t *stream) {
 		std::string stateString;
 		if (!readAllFromStream(stateString, stream)) return false;
-LOG_EXPR(stateString);
 		return true;
 	}
 };
