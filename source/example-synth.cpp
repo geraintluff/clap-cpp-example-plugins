@@ -5,10 +5,14 @@
 
 #include "clap/clap.h"
 
-#include "./clap-extras.h"
-#include "./clap-cbor.h"
+// Helpers for concisely using CLAP from C++
+#include "./clap-cpp-tools.h"
+
+#include "./note-manager/note-manager.h"
 
 #include <cstring>
+
+static std::string clapBundleResourceDir;
 
 struct ExampleSynth {
 	static const clap_plugin_descriptor * getPluginDescriptor() {
@@ -35,10 +39,22 @@ struct ExampleSynth {
 		return &(new ExampleSynth(host))->clapPlugin;
 	}
 
+	
 	const clap_host *host;
+	// Extensions aren't filled out until `.pluginInit()`
+	const clap_host_state *hostState = nullptr;
+	const clap_host_audio_ports *hostAudioPorts = nullptr;
+	const clap_host_note_ports *hostNotePorts = nullptr;
+
+	struct Note {
+		float phase = 0;
+		float midiNote = 0;
+	};
+	std::vector<Note> notes;
+	NoteManager noteManager;
 
 	ExampleSynth(const clap_host *host) : host(host) {
-		
+		notes.reserve(16);
 	}
 	
 	const clap_plugin clapPlugin{
@@ -57,7 +73,9 @@ struct ExampleSynth {
 	};
 
 	bool pluginInit() {
-		// This is a normal C++ method
+		getHostExtension(host, CLAP_EXT_STATE, hostState);
+		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
+		getHostExtension(host, CLAP_EXT_NOTE_PORTS, hostNotePorts);
 		return true;
 	}
 	void pluginDestroy() {
@@ -74,6 +92,10 @@ struct ExampleSynth {
 	void pluginStopProcessing() {
 	}
 	void pluginReset() {
+		noteManager.reset();
+	}
+	void processEvent(const clap_event_header *event) {
+		LOG_EXPR(event->type);
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
 		for (uint32_t outPort = 0; outPort < process->audio_outputs_count; ++outPort) {
@@ -96,6 +118,32 @@ struct ExampleSynth {
 				}
 			}
 		}
+		
+		noteManager.startBlock();
+		auto processNoteTasks = [&]() {
+			for (auto &note : noteManager.tasks) {
+				
+			}
+		};
+
+		auto *eventsIn = process->in_events;
+		auto *eventsOut = process->out_events;
+		uint32_t eventCount = eventsIn->size(eventsIn);
+		for (uint32_t i = 0; i < eventCount; ++i) {
+			auto *event = eventsIn->get(eventsIn, i);
+			if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) continue;
+
+			if (noteManager.processEvent(event)) {
+				processNoteTasks();
+			} else {
+				processEvent(event);
+			}
+			eventsOut->try_push(eventsOut, event);
+		}
+		
+		noteManager.processTo(process->frames_count);
+		processNoteTasks();
+		
 		return CLAP_PROCESS_CONTINUE;
 	}
 	void pluginOnMainThread() {
@@ -106,6 +154,18 @@ struct ExampleSynth {
 			static const clap_plugin_state ext{
 				.save=clapPluginMethod<&ExampleSynth::stateSave>(),
 				.load=clapPluginMethod<&ExampleSynth::stateLoad>(),
+			};
+			return &ext;
+		} else if (!std::strcmp(extId, CLAP_EXT_AUDIO_PORTS)) {
+			static const clap_plugin_audio_ports ext{
+				.count=clapPluginMethod<&ExampleSynth::audioPortsCount>(),
+				.get=clapPluginMethod<&ExampleSynth::audioPortsGet>(),
+			};
+			return &ext;
+		} else if (!std::strcmp(extId, CLAP_EXT_NOTE_PORTS)) {
+			static const clap_plugin_note_ports ext{
+				.count=clapPluginMethod<&ExampleSynth::notePortsCount>(),
+				.get=clapPluginMethod<&ExampleSynth::notePortsGet>(),
 			};
 			return &ext;
 		}
@@ -121,13 +181,75 @@ struct ExampleSynth {
 		if (!readAllFromStream(stateString, stream)) return false;
 		return true;
 	}
-};
+	
+	uint32_t audioPortsCount(bool isInput) {
+		return 1;
+	}
+	bool audioPortsGet(uint32_t index, bool isInput, clap_audio_port_info *info) {
+		if (index > audioPortsCount(isInput)) return false;
+		*info = {
+			.id=0xF0CACC1A,
+			.name={'m', 'a', 'i', 'n'},
+			.flags=CLAP_AUDIO_PORT_IS_MAIN + CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE,
+			.channel_count=2,
+			.port_type=CLAP_PORT_STEREO,
+			.in_place_pair=CLAP_INVALID_ID
+		};
+		return true;
+	}
 
-#include "./plugin-list.h"
-
-std::vector<RegisteredPlugin> registeredPlugins = {
-	{
-		ExampleSynth::getPluginDescriptor(),
-		ExampleSynth::create
+	uint32_t notePortsCount(bool isInput) {
+		return isInput ? 1 : 0;
+	}
+	bool notePortsGet(uint32_t index, bool isInput, clap_note_port_info *info) {
+		if (index > notePortsCount(isInput)) return false;
+		*info = {
+			.id=0xDEADBA55,
+			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,
+			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
+			.name={'n', 'o', 't', 'e', 's'}
+		};
+		return true;
 	}
 };
+
+// ---- Plugin factory ----
+
+static uint32_t pluginFactoryGetPluginCount(const struct clap_plugin_factory *) {
+	return 1;
+}
+static const clap_plugin_descriptor_t * pluginFactoryGetPluginDescriptor(const struct clap_plugin_factory *factory, uint32_t index) {
+	if (index == 0) return ExampleSynth::getPluginDescriptor();
+	return nullptr;
+}
+
+static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_factory *, const clap_host_t *host, const char *pluginId) {
+	if (!std::strcmp(pluginId, ExampleSynth::getPluginDescriptor()->id)) {
+		return ExampleSynth::create(host);
+	}
+	return nullptr;
+}
+
+// ---- Main bundle methods ----
+
+bool clapEntryInit(const char *path) {
+	clapBundleResourceDir = path;
+#if defined(__APPLE__) && __APPLE__ && defined(TARGET_OS_OSX) && TARGET_OS_OSX
+	clapBundleResourceDir += "/Contents/Resources";
+#endif
+	return true;
+}
+void clapEntryDeinit() {
+	clapBundleResourceDir = "";
+}
+
+const void * clapEntryGetFactory(const char *factoryId) {
+	if (!std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID)) {
+		static const clap_plugin_factory clapPluginFactory{
+			.get_plugin_count=pluginFactoryGetPluginCount,
+			.get_plugin_descriptor=pluginFactoryGetPluginDescriptor,
+			.create_plugin=pluginFactoryCreatePlugin
+		};
+		return &clapPluginFactory;
+	}
+}

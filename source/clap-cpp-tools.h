@@ -3,6 +3,11 @@
 #include "clap/plugin.h"
 #include "clap/stream.h"
 
+#include <string>
+#include <vector>
+
+// ---- clapPluginMethod(): make a plain-C function which calls a C++ method ----
+
 template <typename T>
 struct ClapPluginMethodHelper;
 
@@ -24,22 +29,15 @@ struct ClapPluginMethodHelper<Return (Object::*)(Args...)> {
 	}
 };
 
-// ---- read/write `std::vector`/`std::string` using CLAP stream(s) ----
+// ---- checks for a host extension ----
 
-template<class Container>
-bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
-	return writeAllToStream((const void *)c.data(), c.size()*sizeof(c[0]), ostream);
+template<class HostExtension>
+bool getHostExtension(const clap_host *host, const char *extId, const HostExtension *&hostExt) {
+	hostExt = (const HostExtension *)host->get_extension(host, extId);
+	return hostExt;
 }
 
-bool writeAllToStream(const void *buffer, size_t length, const clap_ostream *ostream) {
-	size_t index = 0;
-	while (length > index) {
-		int64_t result = ostream->write(ostream, (const void *)((size_t)buffer + index), uint64_t(length - index));
-		if (result <= 0) return false;
-		index += result;
-	}
-	return true;
-}
+// ---- read/write `std::vector<(unsigned?) char>`/`std::string` using CLAP stream(s) ----
 
 template<class Container>
 bool readAllFromStream(Container &byteContainer, const clap_istream *istream, size_t chunkBytes=1024) {
@@ -56,4 +54,19 @@ bool readAllFromStream(Container &byteContainer, const clap_istream *istream, si
 			return false;
 		}
 	}
+}
+
+template<class Container>
+bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
+	return writeAllToStream((const void *)c.data(), c.size()*sizeof(c[0]), ostream);
+}
+
+bool writeAllToStream(const void *buffer, size_t length, const clap_ostream *ostream) {
+	size_t index = 0;
+	while (length > index) {
+		int64_t result = ostream->write(ostream, (const void *)((size_t)buffer + index), uint64_t(length - index));
+		if (result <= 0) return false;
+		index += result;
+	}
+	return true;
 }
