@@ -46,15 +46,15 @@ struct ExampleSynth {
 	const clap_host_audio_ports *hostAudioPorts = nullptr;
 	const clap_host_note_ports *hostNotePorts = nullptr;
 
-	struct Note {
+	struct Osc {
 		float phase = 0;
-		float midiNote = 0;
+		float amp = 0;
 	};
-	std::vector<Note> notes;
+	std::vector<Osc> oscillators;
 	NoteManager noteManager;
 
 	ExampleSynth(const clap_host *host) : host(host) {
-		notes.reserve(16);
+		oscillators.resize(noteManager.polyphony());
 	}
 	
 	const clap_plugin clapPlugin{
@@ -81,7 +81,8 @@ struct ExampleSynth {
 	void pluginDestroy() {
 		delete this;
 	}
-	bool pluginActivate(double sampleRate, uint32_t minFrames, uint32_t maxFrames) {
+	bool pluginActivate(double sRate, uint32_t minFrames, uint32_t maxFrames) {
+		sampleRate = sRate;
 		return true;
 	}
 	void pluginDeactivate() {
@@ -95,6 +96,7 @@ struct ExampleSynth {
 		noteManager.reset();
 	}
 	void processEvent(const clap_event_header *event) {
+		LOG_EXPR(event->time);
 		LOG_EXPR(event->type);
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
@@ -118,11 +120,37 @@ struct ExampleSynth {
 				}
 			}
 		}
+
+		auto &synthOut = process->audio_outputs[0];
 		
 		noteManager.startBlock();
 		auto processNoteTasks = [&]() {
 			for (auto &note : noteManager.tasks) {
+				auto &osc = oscillators[note.polyIndex];
 				
+				if (note.event == NoteManager::eventDown) {
+					// Start new note
+					osc.amp = 0;
+				}
+				
+				float *outputBuffer = synthOut.data32[note.polyIndex%synthOut.channel_count];
+				
+				auto slewMs = 50 - 49*note.velocity*note.velocity;
+				auto ampSlew = 1/(slewMs*0.001f*sampleRate + 1);
+				auto targetAmp = (note.released() ? 0 : note.velocity/4);
+				auto hz = 440*std::exp2((note.key - 69)/12);
+				auto phaseStep = hz/sampleRate;
+				
+				for (uint32_t i = note.processFrom; i < note.processTo; ++i) {
+					osc.amp += (targetAmp - osc.amp)*ampSlew;
+					osc.phase += phaseStep;
+					outputBuffer[i] += osc.amp*std::sin(float(2*M_PI)*osc.phase);
+				}
+				osc.phase -= std::floor(osc.phase);
+
+				if (note.released() && osc.amp < 1e-4f) {
+					noteManager.stop(note, process->out_events);
+				}
 			}
 		};
 
@@ -209,6 +237,8 @@ struct ExampleSynth {
 		};
 		return true;
 	}
+private:
+	float sampleRate = 1;
 };
 
 // ---- Plugin factory ----
