@@ -131,8 +131,6 @@ struct ExampleSynth {
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
-			if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) continue;
-
 			if (noteManager.processEvent(event)) {
 				processNoteTasks();
 			} else {
