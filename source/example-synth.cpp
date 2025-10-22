@@ -129,7 +129,7 @@ struct ExampleSynth {
 			for (auto &note : noteManager.tasks) {
 				auto &osc = oscillators[note.polyIndex];
 				
-				if (note.event == NoteManager::eventDown) {
+				if (note.state == NoteManager::stateDown) {
 					// Start new note
 					osc.amp = 0;
 				}
@@ -142,7 +142,7 @@ struct ExampleSynth {
 				auto hz = 440*std::exp2((note.key - 69)/12);
 				auto phaseStep = hz/sampleRate;
 				
-				if (note.event == NoteManager::eventKill) {
+				if (note.state == NoteManager::stateKill) {
 					targetAmp = 0;
 					float samples = note.processTo - note.processFrom;
 					// Decay -60dB in the time we have

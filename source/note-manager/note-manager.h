@@ -5,7 +5,7 @@
 #include <vector>
 
 struct NoteManager {
-	enum Event{eventDown, eventLegato, eventContinue, eventUp, eventRelease, eventKill};
+	enum State{stateDown, stateLegato, stateContinue, stateUp, stateRelease, stateKill};
 
 	struct Note {
 		size_t polyIndex;
@@ -15,11 +15,11 @@ struct NoteManager {
 
 		uint32_t processFrom = 0, processTo = 0;
 
-		Event event = eventDown;
+		State state = stateDown;
 		size_t age = 0;
 		
 		bool released() const {
-			return event == eventUp || event == eventRelease || event == eventKill;
+			return state == stateUp || state == stateRelease || state == stateKill;
 		}
 		
 		bool match(const clap_event_note &clapEvent) const {
@@ -34,7 +34,7 @@ struct NoteManager {
 		}
 		
 		float killCost() const {
-			return 1.0f/(age + 1) + 10 - (int)event;
+			return 1.0f/(age + 1) + 10 - (int)state;
 		}
 	};
 	
@@ -72,10 +72,10 @@ struct NoteManager {
 				tasks.push_back(n);
 				n.age += (n.processTo - n.processFrom);
 				n.processFrom = frames;
-				if (n.event == eventDown || n.event == eventLegato) {
-					n.event = eventContinue;
-				} else if (n.event == eventUp) {
-					n.event = eventRelease;
+				if (n.state == stateDown || n.state == stateLegato) {
+					n.state = stateContinue;
+				} else if (n.state == stateUp) {
+					n.state = stateRelease;
 				}
 			}
 		}
@@ -97,7 +97,7 @@ struct NoteManager {
 						}
 						n.processFrom = event->time;
 					}
-					n.event = eventLegato;
+					n.state = stateLegato;
 					return true;
 				}
 			}
@@ -113,7 +113,7 @@ struct NoteManager {
 					}
 				}
 				auto &killNote = notes[killIndex];
-				killNote.event = eventKill;
+				killNote.state = stateKill;
 				killNote.processTo = event->time;
 				// Push this task even if it's zero length
 				tasks.push_back(killNote);
@@ -128,7 +128,7 @@ struct NoteManager {
 				.port=noteEvent.port_index,
 				.processFrom=event->time,
 				.processTo=event->time,
-				.event=eventDown
+				.state=stateDown
 			};
 			if (newNote.noteId < 0) {
 				newNote.noteId = -int32_t(internalNoteId);
@@ -149,7 +149,7 @@ struct NoteManager {
 					}
 					n.processFrom = event->time;
 				}
-				n.event = eventUp;
+				n.state = stateUp;
 				if (n.noteId < 0) {
 					// This lets us close a particular note
 					// and we're not using this since without note IDs
