@@ -8,7 +8,7 @@
 // Helpers for concisely using CLAP from C++
 #include "./clap-cpp-tools.h"
 
-#include "./note-manager/note-manager.h"
+#include "./synth-manager/synth-manager.h"
 
 #include <cstring>
 #include <cmath>
@@ -49,13 +49,14 @@ struct ExampleSynth {
 
 	struct Osc {
 		float phase = 0;
-		float amp = 0;
+		float attackRelease = 0;
+		float decay = 1;
 	};
 	std::vector<Osc> oscillators;
-	NoteManager noteManager;
+	SynthManager synthManager;
 
 	ExampleSynth(const clap_host *host) : host(host) {
-		oscillators.resize(noteManager.polyphony());
+		oscillators.resize(synthManager.polyphony());
 	}
 	
 	const clap_plugin clapPlugin{
@@ -94,7 +95,7 @@ struct ExampleSynth {
 	void pluginStopProcessing() {
 	}
 	void pluginReset() {
-		noteManager.reset();
+		synthManager.reset();
 	}
 	void processEvent(const clap_event_header *event) {
 		LOG_EXPR(event->time);
@@ -124,40 +125,51 @@ struct ExampleSynth {
 
 		auto &synthOut = process->audio_outputs[0];
 		
-		noteManager.startBlock();
+		synthManager.startBlock();
 		auto processNoteTasks = [&]() {
-			for (auto &note : noteManager.tasks) {
-				auto &osc = oscillators[note.polyIndex];
+			for (auto &note : synthManager.tasks) {
+				auto &osc = oscillators[note.voiceIndex];
 				
-				if (note.state == NoteManager::stateDown) {
+				if (note.state == SynthManager::stateDown) {
 					// Start new note
-					osc.amp = 0;
+					osc = {};
 				}
 				
-				float *outputBuffer = synthOut.data32[note.polyIndex%synthOut.channel_count];
-				
-				auto slewMs = 50 - 49*note.velocity*note.velocity;
-				auto ampSlew = 1/(slewMs*0.001f*sampleRate + 1);
-				auto targetAmp = (note.released() ? 0 : note.velocity/4);
+				float *outputBuffer = synthOut.data32[note.voiceIndex%synthOut.channel_count];
+
+				// Oscillator frequency
 				auto hz = 440*std::exp2((note.key - 69)/12);
 				auto phaseStep = hz/sampleRate;
+				// attack/release envelope
+				auto arMs = 2;
+				auto arSlew = 1/(arMs*0.001f*sampleRate + 1);
+				auto targetAr = (note.released() ? 0 : std::sqrt(note.velocity)/4);
+				// decay rate
+				auto decayMs = 10 + 300*note.velocity*note.velocity;
+				auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
 				
-				if (note.state == NoteManager::stateKill) {
-					targetAmp = 0;
-					float samples = note.processTo - note.processFrom;
+				if (note.state == SynthManager::stateKill) { // This note is about to be stolen
+					// minimum 1ms fade-out
+					note.processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
+					// unless we'd hit the end of the block
+					note.processTo = std::min(note.processTo, process->frames_count);
+					
 					// Decay -60dB in the time we have
-					ampSlew = 7/(samples + 7);
+					float samples = note.processTo - note.processFrom;
+					arSlew = 7/(samples + 7);
+					targetAr = 0;
 				}
 				
 				for (uint32_t i = note.processFrom; i < note.processTo; ++i) {
-					osc.amp += (targetAmp - osc.amp)*ampSlew;
+					osc.attackRelease += (targetAr - osc.attackRelease)*arSlew;
+					osc.decay += (note.velocity*0.25f - osc.decay)*decaySlew;
 					osc.phase += phaseStep;
-					outputBuffer[i] += osc.amp*std::sin(float(2*M_PI)*osc.phase);
+					outputBuffer[i] += osc.decay*osc.attackRelease*std::sin(float(2*M_PI)*osc.phase);
 				}
 				osc.phase -= std::floor(osc.phase);
 
-				if (note.released() && osc.amp < 1e-4f) {
-					noteManager.stop(note, process->out_events);
+				if (note.released() && osc.attackRelease < 1e-4f) {
+					synthManager.stop(note, process->out_events);
 				}
 			}
 		};
@@ -167,7 +179,7 @@ struct ExampleSynth {
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
-			if (noteManager.processEvent(event, eventsOut)) {
+			if (synthManager.processEvent(event, eventsOut)) {
 				processNoteTasks();
 			} else {
 				processEvent(event);
@@ -175,7 +187,7 @@ struct ExampleSynth {
 			eventsOut->try_push(eventsOut, event);
 		}
 		
-		noteManager.processTo(process->frames_count);
+		synthManager.processTo(process->frames_count);
 		processNoteTasks();
 		
 		return CLAP_PROCESS_CONTINUE;
@@ -236,7 +248,7 @@ struct ExampleSynth {
 		return isInput ? 1 : 0;
 	}
 	bool notePortsGet(uint32_t index, bool isInput, clap_note_port_info *info) {
-		if (index > notePortsCount(isInput)) return false;
+		if (index > notePortsCount(isInput)) return false; // input only
 		*info = {
 			.id=0xDEADBA55,
 			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,

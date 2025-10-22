@@ -4,11 +4,11 @@
 
 #include <vector>
 
-struct NoteManager {
+struct SynthManager {
 	enum State{stateDown, stateLegato, stateContinue, stateUp, stateRelease, stateKill};
 
 	struct Note {
-		size_t polyIndex;
+		size_t voiceIndex;
 		float key, velocity;
 		int32_t noteId;
 		int16_t baseKey, port, channel;
@@ -38,11 +38,11 @@ struct NoteManager {
 		}
 	};
 	
-	NoteManager(size_t polyphony=16) {
+	SynthManager(size_t polyphony=64) {
 		notes.reserve(polyphony);
 		tasks.reserve(std::max<size_t>(2, polyphony)); // we might need to handle a kill and note-start from a single event
 		for (size_t i = 0; i < polyphony; ++i) {
-			polyIndexQueue.push_back(polyphony - 1 - i);
+			voiceIndexQueue.push_back(polyphony - 1 - i);
 		}
 	}
 	
@@ -54,9 +54,9 @@ struct NoteManager {
 		notes.resize(0);
 		tasks.resize(0);
 		auto polyphony = notes.capacity();
-		polyIndexQueue.resize(0);
+		voiceIndexQueue.resize(0);
 		for (size_t i = 0; i < polyphony; ++i) {
-			polyIndexQueue.push_back(polyphony - 1 - i);
+			voiceIndexQueue.push_back(polyphony - 1 - i);
 		}
 	}
 	
@@ -120,7 +120,7 @@ struct NoteManager {
 				stop(killNote, eventsOut);
 			}
 			Note newNote{
-				.polyIndex=polyIndexQueue.back(),
+				.voiceIndex=voiceIndexQueue.back(),
 				.noteId=noteEvent.note_id,
 				.key=float(noteEvent.key),
 				.velocity=float(noteEvent.velocity),
@@ -135,7 +135,7 @@ struct NoteManager {
 				if (++internalNoteId >= 0x7FFFFFFF) internalNoteId = 2;
 			}
 			notes.push_back(newNote);
-			polyIndexQueue.pop_back();
+			voiceIndexQueue.pop_back();
 			return true;
 		} else if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
 			auto &noteEvent = *(const clap_event_note *)event;
@@ -154,7 +154,7 @@ struct NoteManager {
 					// This lets us close a particular note
 					// and we're not using this since without note IDs
 					// we can't have per-note modulation
-					n.baseKey = -1 - int(n.polyIndex);
+					n.baseKey = -1 - int(n.voiceIndex);
 				}
 				// Only return if the note ID isn't a wildcard
 				if (noteEvent.note_id >= 0) return true;
@@ -186,7 +186,7 @@ struct NoteManager {
 					eventsOut->try_push(eventsOut, &stopEvent.header);
 				}
 				
-				polyIndexQueue.push_back(n.polyIndex);
+				voiceIndexQueue.push_back(n.voiceIndex);
 				if (notes.size() <= 1) { // final note
 					notes.resize(0);
 				} else {
@@ -205,5 +205,5 @@ struct NoteManager {
 private:
 	uint32_t internalNoteId = 2;
 	std::vector<Note> notes;
-	std::vector<size_t> polyIndexQueue;
+	std::vector<size_t> voiceIndexQueue;
 };
