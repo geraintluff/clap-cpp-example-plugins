@@ -115,9 +115,8 @@ struct NoteManager {
 				auto &killNote = notes[killIndex];
 				killNote.event = eventKill;
 				killNote.processTo = event->time;
-				if (killNote.processTo > killNote.processFrom) {
-					tasks.push_back(killNote);
-				}
+				// Push this task even if it's zero length
+				tasks.push_back(killNote);
 				stop(killNote, eventsOut);
 			}
 			Note newNote{

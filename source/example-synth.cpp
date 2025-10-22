@@ -144,9 +144,9 @@ struct ExampleSynth {
 				
 				if (note.event == NoteManager::eventKill) {
 					targetAmp = 0;
-					auto samples = note.processTo - note.processFrom;
-					// Will decay -60dB in the time we have
-					ampSlew = 7.0f/(samples + 7);
+					float samples = note.processTo - note.processFrom;
+					// Decay -60dB in the time we have
+					ampSlew = 7/(samples + 7);
 				}
 				
 				for (uint32_t i = note.processFrom; i < note.processTo; ++i) {
