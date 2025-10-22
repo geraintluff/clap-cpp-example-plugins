@@ -11,29 +11,36 @@ struct NoteManager {
 		size_t polyIndex;
 		float key, velocity;
 		int32_t noteId;
-		int16_t baseKey, port;
+		int16_t baseKey, port, channel;
 
 		uint32_t processFrom = 0, processTo = 0;
 
 		Event event = eventDown;
+		size_t age = 0;
 		
 		bool released() const {
-			return event == eventUp || event == eventRelease;
+			return event == eventUp || event == eventRelease || event == eventKill;
 		}
 		
 		bool match(const clap_event_note &clapEvent) const {
-			if (clapEvent.note_id >= 0) return noteId == clapEvent.note_id;
-			return baseKey == clapEvent.key;
+			if (clapEvent.note_id >= 0 && clapEvent.note_id != noteId) return false;
+			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
+			if (clapEvent.channel >= 0 && clapEvent.channel != channel) return false;
+			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
+			return true;
 		}
 		bool match(const Note &other) const {
-			if (noteId >= 0 || other.noteId >= 0) return noteId == other.noteId;
-			return baseKey == other.baseKey;
+			return noteId == other.noteId;
+		}
+		
+		float killCost() const {
+			return 1.0f/(age + 1) + 10 - (int)event;
 		}
 	};
 	
 	NoteManager(size_t polyphony=16) {
 		notes.reserve(polyphony);
-		tasks.reserve(polyphony);
+		tasks.reserve(std::max<size_t>(2, polyphony)); // we might need to handle a kill and note-start from a single event
 		for (size_t i = 0; i < polyphony; ++i) {
 			polyIndexQueue.push_back(polyphony - 1 - i);
 		}
@@ -63,6 +70,7 @@ struct NoteManager {
 			if (n.processFrom < frames) {
 				n.processTo = frames;
 				tasks.push_back(n);
+				n.age += (n.processTo - n.processFrom);
 				n.processFrom = frames;
 				if (n.event == eventDown || n.event == eventLegato) {
 					n.event = eventContinue;
@@ -73,29 +81,62 @@ struct NoteManager {
 		}
 	}
 	
-	bool processEvent(const clap_event_header *event) {
+	bool processEvent(const clap_event_header *event, const clap_output_events *eventsOut) {
 		tasks.resize(0);
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return false;
 		if (event->type == CLAP_EVENT_NOTE_ON) {
 			auto &noteEvent = *(const clap_event_note *)event;
 			for (auto &n : notes) {
-				if (n.match(noteEvent)) return true;
+				if (n.match(noteEvent)) {
+					// Retrigger (legato) an existing note
+					if (n.processFrom < event->time) {
+						n.processTo = event->time;
+						if (n.processTo > n.processFrom) {
+							tasks.push_back(n);
+							n.age += (n.processTo - n.processFrom);
+						}
+						n.processFrom = event->time;
+					}
+					n.event = eventLegato;
+					return true;
+				}
 			}
-			if (notes.size() < notes.capacity()) {
-				Note newNote{
-					.polyIndex=polyIndexQueue.back(),
-					.noteId=noteEvent.note_id,
-					.key=float(noteEvent.key),
-					.velocity=float(noteEvent.velocity),
-					.baseKey=noteEvent.key,
-					.port=noteEvent.port_index,
-					.processFrom=event->time,
-					.processTo=event->time,
-					.event=eventDown
-				};
-				notes.push_back(newNote);
-				polyIndexQueue.pop_back();
+			if (notes.size() >= notes.capacity()) {
+				// Kill an existing note
+				size_t killIndex = 0;
+				float killCost = 1e10;
+				for (size_t i = 0; i < notes.size(); ++i) {
+					auto cost = notes[i].killCost();
+					if (cost < killCost) {
+						killIndex = i;
+						killCost = cost;
+					}
+				}
+				auto &killNote = notes[killIndex];
+				killNote.event = eventKill;
+				killNote.processTo = event->time;
+				if (killNote.processTo > killNote.processFrom) {
+					tasks.push_back(killNote);
+				}
+				stop(killNote, eventsOut);
 			}
+			Note newNote{
+				.polyIndex=polyIndexQueue.back(),
+				.noteId=noteEvent.note_id,
+				.key=float(noteEvent.key),
+				.velocity=float(noteEvent.velocity),
+				.baseKey=noteEvent.key,
+				.port=noteEvent.port_index,
+				.processFrom=event->time,
+				.processTo=event->time,
+				.event=eventDown
+			};
+			if (newNote.noteId < 0) {
+				newNote.noteId = -int32_t(internalNoteId);
+				if (++internalNoteId >= 0x7FFFFFFF) internalNoteId = 2;
+			}
+			notes.push_back(newNote);
+			polyIndexQueue.pop_back();
 			return true;
 		} else if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
 			auto &noteEvent = *(const clap_event_note *)event;
@@ -103,7 +144,10 @@ struct NoteManager {
 				if (!n.match(noteEvent)) continue;
 				if (n.processFrom < event->time) {
 					n.processTo = event->time;
-					tasks.push_back(n);
+					if (n.processTo > n.processFrom) {
+						tasks.push_back(n);
+						n.age += (n.processTo - n.processFrom);
+					}
 					n.processFrom = event->time;
 				}
 				n.event = eventUp;
@@ -113,9 +157,10 @@ struct NoteManager {
 					// we can't have per-note modulation
 					n.baseKey = -1 - int(n.polyIndex);
 				}
-				return true;
+				// Only return if the note ID isn't a wildcard
+				if (noteEvent.note_id >= 0) return true;
 			}
-			return true; // couldn't find a matching note - probably means we ran out of polyphony
+			return true;
 		}
 		return false;
 	}
@@ -159,6 +204,7 @@ struct NoteManager {
 	
 	std::vector<Note> tasks;
 private:
+	uint32_t internalNoteId = 2;
 	std::vector<Note> notes;
 	std::vector<size_t> polyIndexQueue;
 };

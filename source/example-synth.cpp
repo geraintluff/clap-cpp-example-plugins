@@ -142,6 +142,13 @@ struct ExampleSynth {
 				auto hz = 440*std::exp2((note.key - 69)/12);
 				auto phaseStep = hz/sampleRate;
 				
+				if (note.event == NoteManager::eventKill) {
+					targetAmp = 0;
+					auto samples = note.processTo - note.processFrom;
+					// Will decay -60dB in the time we have
+					ampSlew = 7.0f/(samples + 7);
+				}
+				
 				for (uint32_t i = note.processFrom; i < note.processTo; ++i) {
 					osc.amp += (targetAmp - osc.amp)*ampSlew;
 					osc.phase += phaseStep;
@@ -160,7 +167,7 @@ struct ExampleSynth {
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
-			if (noteManager.processEvent(event)) {
+			if (noteManager.processEvent(event, eventsOut)) {
 				processNoteTasks();
 			} else {
 				processEvent(event);
