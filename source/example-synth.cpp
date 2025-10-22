@@ -11,6 +11,7 @@
 #include "./note-manager/note-manager.h"
 
 #include <cstring>
+#include <cmath>
 
 static std::string clapBundleResourceDir;
 

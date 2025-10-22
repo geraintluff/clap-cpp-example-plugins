@@ -5,7 +5,7 @@
 #include <vector>
 
 struct NoteManager {
-	enum Event{eventDown, eventLegato, eventContinue, eventUp, eventRelease};
+	enum Event{eventDown, eventLegato, eventContinue, eventUp, eventRelease, eventKill};
 
 	struct Note {
 		size_t polyIndex;
