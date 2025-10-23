@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <cmath>
+#include <cstdio>
 
 static std::string clapBundleResourceDir;
 
@@ -39,13 +40,13 @@ struct ExampleSynth {
 	static const clap_plugin * create(const clap_host *host) {
 		return &(new ExampleSynth(host))->clapPlugin;
 	}
-
 	
 	const clap_host *host;
 	// Extensions aren't filled out until `.pluginInit()`
 	const clap_host_state *hostState = nullptr;
 	const clap_host_audio_ports *hostAudioPorts = nullptr;
 	const clap_host_note_ports *hostNotePorts = nullptr;
+	const clap_host_params *hostParams = nullptr;
 
 	struct Osc {
 		float phase = 0;
@@ -54,6 +55,8 @@ struct ExampleSynth {
 	};
 	std::vector<Osc> oscillators;
 	SynthManager synthManager;
+	
+	double decayRangeMs = 300;
 
 	ExampleSynth(const clap_host *host) : host(host) {
 		oscillators.resize(synthManager.polyphony());
@@ -78,6 +81,7 @@ struct ExampleSynth {
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
 		getHostExtension(host, CLAP_EXT_NOTE_PORTS, hostNotePorts);
+		getHostExtension(host, CLAP_EXT_PARAMS, hostParams);
 		return true;
 	}
 	void pluginDestroy() {
@@ -98,8 +102,16 @@ struct ExampleSynth {
 		synthManager.reset();
 	}
 	void processEvent(const clap_event_header *event) {
-		LOG_EXPR(event->time);
-		LOG_EXPR(event->type);
+		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;
+		if (event->type == CLAP_EVENT_PARAM_VALUE) {
+			auto &eventParam = *(const clap_event_param_value *)event;
+			if (eventParam.param_id == 0xCA55E77E) {
+				decayRangeMs = eventParam.value;
+			}
+		} else {
+			LOG_EXPR(event->time);
+			LOG_EXPR(event->type);
+		}
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
 		for (uint32_t outPort = 0; outPort < process->audio_outputs_count; ++outPort) {
@@ -145,7 +157,7 @@ struct ExampleSynth {
 				auto arSlew = 1/(arMs*0.001f*sampleRate + 1);
 				auto targetAr = (note.released() ? 0 : std::sqrt(note.velocity)/4);
 				// decay rate
-				auto decayMs = 10 + 300*note.velocity*note.velocity;
+				auto decayMs = 10 + decayRangeMs*note.velocity*note.velocity;
 				auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
 				
 				if (note.state == SynthManager::stateKill) { // This note is about to be stolen
@@ -214,9 +226,21 @@ struct ExampleSynth {
 				.get=clapPluginMethod<&ExampleSynth::notePortsGet>(),
 			};
 			return &ext;
+		} else if (!std::strcmp(extId, CLAP_EXT_PARAMS)) {
+			static const clap_plugin_params ext{
+				.count=clapPluginMethod<&ExampleSynth::paramsCount>(),
+				.get_info=clapPluginMethod<&ExampleSynth::paramsGetInfo>(),
+				.get_value=clapPluginMethod<&ExampleSynth::paramsGetValue>(),
+				.value_to_text=clapPluginMethod<&ExampleSynth::paramsValueToText>(),
+				.text_to_value=clapPluginMethod<&ExampleSynth::paramsTextToValue>(),
+				.flush=clapPluginMethod<&ExampleSynth::paramsFlush>(),
+			};
+			return &ext;
 		}
 		return nullptr;
 	}
+	
+	// ---- state save/load ----
 	
 	bool stateSave(const clap_ostream_t *stream) {
 		std::string stateString = "Hello, world!";
@@ -227,7 +251,9 @@ struct ExampleSynth {
 		if (!readAllFromStream(stateString, stream)) return false;
 		return true;
 	}
-	
+
+	// ---- audio ports ----
+
 	uint32_t audioPortsCount(bool isInput) {
 		return 1;
 	}
@@ -244,18 +270,72 @@ struct ExampleSynth {
 		return true;
 	}
 
+	// ---- note ports ----
+
 	uint32_t notePortsCount(bool isInput) {
 		return isInput ? 1 : 0;
 	}
 	bool notePortsGet(uint32_t index, bool isInput, clap_note_port_info *info) {
 		if (index > notePortsCount(isInput)) return false; // input only
 		*info = {
-			.id=0xDEADBA55,
+			.id=0xC0DEBA55,
 			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,
 			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
 			.name={'n', 'o', 't', 'e', 's'}
 		};
 		return true;
+	}
+
+	// ---- parameters ----
+	
+	uint32_t paramsCount() {
+		return 1;
+	}
+	
+	bool paramsGetInfo(uint32_t index, clap_param_info *info) {
+		if (index > 0) return false;
+		*info = {
+			.id=0xCA55E77E,
+			.flags=CLAP_PARAM_IS_AUTOMATABLE,
+			.cookie=nullptr,
+			.name={}, // assigned below
+			.module={},
+			.min_value=50,
+			.max_value=500,
+			.default_value=300
+		};
+		std::strncpy(info->name, "decay", CLAP_NAME_SIZE);
+		return true;
+	}
+	
+	bool paramsGetValue(clap_id paramId, double *value) {
+		if (paramId != 0xCA55E77E) return false;
+		*value = decayRangeMs;
+		return true;
+	}
+	
+	bool paramsValueToText(clap_id paramId, double value, char *text, uint32_t textCapacity) {
+		if (paramId != 0xCA55E77E) return false;
+		std::snprintf(text, textCapacity, "%i ms", int(std::round(value)));
+		return true;
+	}
+
+	bool paramsTextToValue(clap_id paramId, const char *text, double *value) {
+		if (paramId != 0xCA55E77E) return false;
+		char *numberEnd;
+		*value = std::strtod(text, &numberEnd);
+		if (!(*value >= 50)) *value = 50;
+		if (!(*value <= 500)) *value = 500;
+		return (numberEnd != text);
+	}
+	
+	void paramsFlush(const clap_input_events *eventsIn, const clap_output_events *eventsOut) {
+		uint32_t eventCount = eventsIn->size(eventsIn);
+		for (uint32_t i = 0; i < eventCount; ++i) {
+			auto *event = eventsIn->get(eventsIn, i);
+			processEvent(event);
+			eventsOut->try_push(eventsOut, event);
+		}
 	}
 private:
 	float sampleRate = 1;
