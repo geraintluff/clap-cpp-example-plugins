@@ -16,6 +16,17 @@
 
 static std::string clapBundleResourceDir;
 
+struct Osc {
+	float phase = 0;
+	float normFreq = 0;
+	float attackRelease = 0;
+	float decay = 1;
+	
+	bool canStop() const {
+		return attackRelease < 1e-4f;
+	}
+};
+
 struct ExampleSynth {
 	static const clap_plugin_descriptor * getPluginDescriptor() {
 		static const char * features[] = {
@@ -48,15 +59,17 @@ struct ExampleSynth {
 	const clap_host_note_ports *hostNotePorts = nullptr;
 	const clap_host_params *hostParams = nullptr;
 
-	struct Osc {
-		float phase = 0;
-		float attackRelease = 0;
-		float decay = 1;
-	};
 	std::vector<Osc> oscillators;
 	SynthManager synthManager;
 	
-	double decayRangeMs = 300;
+	struct {
+		clap_id id = 0xCA55E77E;
+		double value = -20;
+	} sustainDb;
+	struct {
+		clap_id id = 0xCA5CADE5;
+		int value = 1;
+	} polyphony;
 
 	ExampleSynth(const clap_host *host) : host(host) {
 		oscillators.resize(synthManager.polyphony());
@@ -105,12 +118,15 @@ struct ExampleSynth {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;
 		if (event->type == CLAP_EVENT_PARAM_VALUE) {
 			auto &eventParam = *(const clap_event_param_value *)event;
-			if (eventParam.param_id == 0xCA55E77E) {
-				decayRangeMs = eventParam.value;
+			if (eventParam.param_id == sustainDb.id) {
+				sustainDb.value = eventParam.value;
+			} else if (eventParam.param_id == polyphony.id) {
+				polyphony.value = int(std::round(eventParam.value));
 			}
-		} else {
-			LOG_EXPR(event->time);
-			LOG_EXPR(event->type);
+
+			// Request a callback so we can tell the host our state is dirty
+			stateDirty = true;
+			if (hostState) host->request_callback(host);
 		}
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
@@ -138,49 +154,62 @@ struct ExampleSynth {
 		auto &synthOut = process->audio_outputs[0];
 		
 		synthManager.startBlock();
-		auto processNoteTasks = [&]() {
-			for (auto &note : synthManager.tasks) {
+		auto processNoteTasks = [&](auto &tasks) {
+			float sustainAmp = std::pow(10, sustainDb.value/20);
+			
+			for (auto &note : tasks) {
 				auto &osc = oscillators[note.voiceIndex];
-				
+
+				auto hz = 440*std::exp2((note.key - 69)/12);
+				auto targetNormFreq = hz/sampleRate;
+
+				auto portamentoMs = 10;
+				auto portamentoSlew = 1/(portamentoMs*0.001f*sampleRate + 1);
+
 				if (note.state == SynthManager::stateDown) {
 					// Start new note
 					osc = {};
+					osc.normFreq = targetNormFreq;
+				} else if (note.state == SynthManager::stateLegato) {
+					// Restart attack from wherever the decay got to
+					osc.attackRelease *= osc.decay;
+					osc.decay = 1;
 				}
 				
-				float *outputBuffer = synthOut.data32[note.voiceIndex%synthOut.channel_count];
-
-				// Oscillator frequency
-				auto hz = 440*std::exp2((note.key - 69)/12);
-				auto phaseStep = hz/sampleRate;
-				// attack/release envelope
-				auto arMs = 2;
+				auto arMs = (note.released() ? 50 : 2);
 				auto arSlew = 1/(arMs*0.001f*sampleRate + 1);
-				auto targetAr = (note.released() ? 0 : std::sqrt(note.velocity)/4);
+				auto targetAr = (note.released() ? 0 : note.velocity/4);
 				// decay rate
-				auto decayMs = 10 + decayRangeMs*note.velocity*note.velocity;
+				auto decayMs = 10 + 490*note.velocity*note.velocity;
 				auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
 				
+				auto processTo = note.processTo;
 				if (note.state == SynthManager::stateKill) { // This note is about to be stolen
 					// minimum 1ms fade-out
-					note.processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
+					processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
 					// unless we'd hit the end of the block
-					note.processTo = std::min(note.processTo, process->frames_count);
+					processTo = std::min(processTo, process->frames_count);
 					
 					// Decay -60dB in the time we have
-					float samples = note.processTo - note.processFrom;
+					float samples = processTo - note.processFrom;
 					arSlew = 7/(samples + 7);
 					targetAr = 0;
 				}
 				
-				for (uint32_t i = note.processFrom; i < note.processTo; ++i) {
+				for (uint32_t i = note.processFrom; i < processTo; ++i) {
 					osc.attackRelease += (targetAr - osc.attackRelease)*arSlew;
-					osc.decay += (note.velocity*0.25f - osc.decay)*decaySlew;
-					osc.phase += phaseStep;
-					outputBuffer[i] += osc.decay*osc.attackRelease*std::sin(float(2*M_PI)*osc.phase);
+					osc.decay += (sustainAmp - osc.decay)*decaySlew;
+					osc.normFreq += (targetNormFreq - osc.normFreq)*portamentoSlew;
+					osc.phase += osc.normFreq;
+					auto amp = osc.attackRelease*osc.decay;
+					auto v = amp*std::sin(float(2*M_PI)*osc.phase);
+					// stereo out
+					synthOut.data32[0][i] += v;
+					synthOut.data32[1][i] += v;
 				}
 				osc.phase -= std::floor(osc.phase);
 
-				if (note.released() && osc.attackRelease < 1e-4f) {
+				if (note.released() && osc.canStop()) {
 					synthManager.stop(note, process->out_events);
 				}
 			}
@@ -191,20 +220,38 @@ struct ExampleSynth {
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
-			if (synthManager.processEvent(event, eventsOut)) {
-				processNoteTasks();
+			auto newNote = synthManager.wouldStart(event);
+			if (newNote) {
+				bool foundLegato = false;
+				if (polyphony.value == 0) {
+					for (auto &otherNote : synthManager) {
+						if (!otherNote.released() || otherNote.ageAt(event->time) < sampleRate*0.01f) {
+							processNoteTasks(synthManager.legato(*newNote, otherNote, eventsOut));
+							foundLegato = true;
+							break;
+						}
+					}
+				}
+				if (!foundLegato) {
+					processNoteTasks(synthManager.start(*newNote, eventsOut));
+				}
 			} else {
-				processEvent(event);
+				processNoteTasks(synthManager.processEvent(event, eventsOut));
 			}
+			processEvent(event);
 			eventsOut->try_push(eventsOut, event);
 		}
 		
-		synthManager.processTo(process->frames_count);
-		processNoteTasks();
+		processNoteTasks(synthManager.processTo(process->frames_count));
 		
 		return CLAP_PROCESS_CONTINUE;
 	}
+	bool stateDirty = false;
 	void pluginOnMainThread() {
+		if (stateDirty && hostState) {
+			hostState->mark_dirty(host);
+			stateDirty = false;
+		}
 	}
 
 	const void * pluginGetExtension(const char *extId) {
@@ -243,13 +290,20 @@ struct ExampleSynth {
 	// ---- state save/load ----
 	
 	bool stateSave(const clap_ostream_t *stream) {
-		std::string stateString = "Hello, world!";
+		// very basic string serialisation
+		std::string stateString = (polyphony.value ? "P" : "M") + std::to_string(sustainDb.value);
 		return writeAllToStream(stateString, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
 		std::string stateString;
-		if (!readAllFromStream(stateString, stream)) return false;
-		return true;
+		if (!readAllFromStream(stateString, stream) || stateString.empty()) return false;
+		polyphony.value = (stateString[0] == 'P' ? 1 : 0);
+		auto value = strtod(stateString.c_str() + 1, nullptr);
+		if (value >= -40 && value <= 0) {
+			sustainDb.value = value;
+			return true;
+		}
+		return false;
 	}
 
 	// ---- audio ports ----
@@ -289,44 +343,70 @@ struct ExampleSynth {
 	// ---- parameters ----
 	
 	uint32_t paramsCount() {
-		return 1;
+		return 2;
 	}
 	
 	bool paramsGetInfo(uint32_t index, clap_param_info *info) {
-		if (index > 0) return false;
-		*info = {
-			.id=0xCA55E77E,
-			.flags=CLAP_PARAM_IS_AUTOMATABLE,
-			.cookie=nullptr,
-			.name={}, // assigned below
-			.module={},
-			.min_value=50,
-			.max_value=500,
-			.default_value=300
-		};
-		std::strncpy(info->name, "decay", CLAP_NAME_SIZE);
-		return true;
+		if (index == 0) {
+			*info = {
+				.id=sustainDb.id,
+				.flags=CLAP_PARAM_IS_AUTOMATABLE,
+				.cookie=nullptr,
+				.name={}, // assigned below
+				.module={},
+				.min_value=-40,
+				.max_value=0,
+				.default_value=-20
+			};
+			std::strncpy(info->name, "sustain", CLAP_NAME_SIZE);
+			return true;
+		} else if (index == 1) {
+			*info = {
+				.id=polyphony.id,
+				.flags=CLAP_PARAM_IS_AUTOMATABLE + CLAP_PARAM_IS_STEPPED,
+				.cookie=nullptr,
+				.name={}, // assigned below
+				.module={},
+				.min_value=0,
+				.max_value=1,
+				.default_value=1
+			};
+			std::strncpy(info->name, "polyphony", CLAP_NAME_SIZE);
+			return true;
+		}
+		return false;
 	}
 	
 	bool paramsGetValue(clap_id paramId, double *value) {
-		if (paramId != 0xCA55E77E) return false;
-		*value = decayRangeMs;
-		return true;
+		if (paramId == sustainDb.id) {
+			*value = sustainDb.value;
+			return true;
+		} else if (paramId == polyphony.id) {
+			*value = double(polyphony.value);
+		}
+		return false;
 	}
 	
 	bool paramsValueToText(clap_id paramId, double value, char *text, uint32_t textCapacity) {
-		if (paramId != 0xCA55E77E) return false;
-		std::snprintf(text, textCapacity, "%i ms", int(std::round(value)));
-		return true;
+		if (paramId == sustainDb.id) {
+			std::snprintf(text, textCapacity, "%i dB", int(std::round(value)));
+			return true;
+		} else if (paramId == polyphony.id) {
+			std::strncpy(text, std::round(value) == 0 ? "monophonic" : "polyphonic", textCapacity);
+			return true;
+		}
+		return false;
 	}
 
 	bool paramsTextToValue(clap_id paramId, const char *text, double *value) {
-		if (paramId != 0xCA55E77E) return false;
-		char *numberEnd;
-		*value = std::strtod(text, &numberEnd);
-		if (!(*value >= 50)) *value = 50;
-		if (!(*value <= 500)) *value = 500;
-		return (numberEnd != text);
+		if (paramId == sustainDb.id) {
+			char *numberEnd;
+			*value = std::strtod(text, &numberEnd);
+			if (!(*value >= 50)) *value = 50;
+			if (!(*value <= 500)) *value = 500;
+			return (numberEnd != text);
+		}
+		return false;
 	}
 	
 	void paramsFlush(const clap_input_events *eventsIn, const clap_output_events *eventsOut) {
