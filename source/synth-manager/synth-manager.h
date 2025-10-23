@@ -4,20 +4,26 @@
 
 #include <vector>
 
+/* This is a helper class which handles CLAP note events, and returns "note tasks", which are sub-blocks for processing each note.  A note's tasks will have a consistent `voiceIndex` (up to the specified polyphony), exclusive to that note it's `.stop()`ed or stolen.
+
+When you hand it an event (and it returns `true`), it queues up tasks for processing any affected notes.  You can also request all notes be processed up to a certain block index, which should be used for completing a block, or for any sample-accurate parameter/etc. changes which affect all notes.
+
+It implements voice-stealing based on time since a note's release (if released) or attack.  This is represented by a note-task with `stateKill`.  The length (`processFrom`/`processTo`) of this task will not overlap with the new note - which unavoidably means it *may* be 0, in which case you can process a bit more to avoid clicks at your discretion.
+*/
 struct SynthManager {
 	enum State{stateDown, stateLegato, stateContinue, stateUp, stateRelease, stateKill};
 
 	struct Note {
+		// Note info
 		size_t voiceIndex;
 		float key, velocity;
-		int32_t noteId;
-		int16_t baseKey, port, channel;
-
-		uint32_t processFrom = 0, processTo = 0;
-
+		int16_t port, channel;
+		// Task info
 		State state = stateDown;
-		size_t age = 0;
+		uint32_t processFrom, processTo;
 		
+		Note(size_t voiceIndex, const clap_event_note &e) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
+
 		bool released() const {
 			return state == stateUp || state == stateRelease || state == stateKill;
 		}
@@ -36,11 +42,16 @@ struct SynthManager {
 		float killCost() const {
 			return 1.0f/(age + 1) + 10 - (int)state;
 		}
+	private:
+		friend class SynthManager;
+		int32_t noteId;
+		int16_t baseKey;
+		size_t age = 0;
 	};
 	
 	SynthManager(size_t polyphony=64) {
 		notes.reserve(polyphony);
-		tasks.reserve(std::max<size_t>(2, polyphony)); // we might need to handle a kill and note-start from a single event
+		tasks.reserve(std::max<size_t>(2, polyphony)); // Even in the monophonic case, we might need to handle both a kill and note-start
 		for (size_t i = 0; i < polyphony; ++i) {
 			voiceIndexQueue.push_back(polyphony - 1 - i);
 		}
@@ -51,21 +62,21 @@ struct SynthManager {
 	}
 	
 	void reset() {
-		notes.resize(0);
-		tasks.resize(0);
+		notes.clear();
+		tasks.clear();
 		auto polyphony = notes.capacity();
-		voiceIndexQueue.resize(0);
+		voiceIndexQueue.clear();
 		for (size_t i = 0; i < polyphony; ++i) {
 			voiceIndexQueue.push_back(polyphony - 1 - i);
 		}
 	}
 	
 	void startBlock() {
-		tasks.resize(0);
+		tasks.clear();
 		for (auto &n : notes) n.processFrom = n.processTo = 0;
 	}
 	void processTo(uint32_t frames) {
-		tasks.resize(0);
+		tasks.clear();
 		for (auto &n : notes) {
 			if (n.processFrom < frames) {
 				n.processTo = frames;
@@ -82,7 +93,7 @@ struct SynthManager {
 	}
 	
 	bool processEvent(const clap_event_header *event, const clap_output_events *eventsOut) {
-		tasks.resize(0);
+		tasks.clear();
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return false;
 		if (event->type == CLAP_EVENT_NOTE_ON) {
 			auto &noteEvent = *(const clap_event_note *)event;
@@ -119,24 +130,13 @@ struct SynthManager {
 				tasks.push_back(killNote);
 				stop(killNote, eventsOut);
 			}
-			Note newNote{
-				.voiceIndex=voiceIndexQueue.back(),
-				.noteId=noteEvent.note_id,
-				.key=float(noteEvent.key),
-				.velocity=float(noteEvent.velocity),
-				.baseKey=noteEvent.key,
-				.port=noteEvent.port_index,
-				.processFrom=event->time,
-				.processTo=event->time,
-				.state=stateDown
-			};
+			Note newNote{voiceIndexQueue.back(), noteEvent};
 			if (newNote.noteId < 0) {
 				newNote.noteId = -int32_t(internalNoteId);
 				if (++internalNoteId >= 0x7FFFFFFF) internalNoteId = 2;
 			}
 			notes.push_back(newNote);
 			voiceIndexQueue.pop_back();
-			return true;
 		} else if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
 			auto &noteEvent = *(const clap_event_note *)event;
 			for (auto &n : notes) {
@@ -150,18 +150,11 @@ struct SynthManager {
 					n.processFrom = event->time;
 				}
 				n.state = stateUp;
-				if (n.noteId < 0) {
-					// This lets us close a particular note
-					// and we're not using this since without note IDs
-					// we can't have per-note modulation
-					n.baseKey = -1 - int(n.voiceIndex);
-				}
-				// Only return if the note ID isn't a wildcard
-				if (noteEvent.note_id >= 0) return true;
+				// Only stop if the note ID isn't a wildcard
+				if (noteEvent.note_id >= 0) break;
 			}
-			return true;
 		}
-		return false;
+		return tasks.size() > 0;
 	}
 	
 	void stop(const Note &noteToStop, const clap_output_events *eventsOut) {
@@ -188,7 +181,7 @@ struct SynthManager {
 				
 				voiceIndexQueue.push_back(n.voiceIndex);
 				if (notes.size() <= 1) { // final note
-					notes.resize(0);
+					notes.clear();
 				} else {
 					if (&n != &notes.back()) {
 						// Move the last note into this slot
