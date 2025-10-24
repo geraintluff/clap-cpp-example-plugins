@@ -28,15 +28,21 @@ struct SynthManager {
 		}
 		
 		bool match(const clap_event_note &clapEvent) const {
-			if (clapEvent.note_id >= 0 && clapEvent.note_id != noteId) return false;
-			if (clapEvent.note_id == -1 && released()) return false;
+			if (clapEvent.note_id != -1) return clapEvent.note_id == noteId;
+			if (released()) return false;
 			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
 			if (clapEvent.channel >= 0 && clapEvent.channel != channel) return false;
 			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
 			return true;
 		}
+		// `other` may contain wildcards (-1), but `this` must not
 		bool match(const Note &other) const {
-			return noteId == other.noteId;
+			if (other.noteId != -1) return noteId == other.noteId;
+			if (released()) return false;
+			if (other.port != -1 && other.port != port) return false;
+			if (other.channel != -1 && other.channel != channel) return false;
+			if (other.baseKey != -1 && other.baseKey != baseKey) return false;
+			return true;
 		}
 		
 		float killCost() const {
@@ -166,23 +172,42 @@ struct SynthManager {
 		return tasks;
 	}
 
+	std::optional<Note> wouldRelease(const clap_event_header *event) const {
+		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
+			auto &noteEvent = *(const clap_event_note *)event;
+			return {Note{size_t(-1), noteEvent}}; // still includes any wildcards
+		}
+		return {};
+	}
+
+	const std::vector<Note> & release(const Note &releaseNote) {
+		// If this is a note-end event (or we don't care) then use the timestamp we already have
+		return release(releaseNote, releaseNote.processFrom);
+	}
+
+	const std::vector<Note> & release(const Note &releaseNote, uint32_t atBlockTime) {
+		tasks.clear();
+		for (auto &n : notes) {
+			if (!n.match(releaseNote)) {
+				addTask(n, atBlockTime);
+				n.state = stateUp;
+				n.age = 0;
+				// Only stop if the note ID isn't a wildcard
+				if (releaseNote.noteId >= 0) break;
+			}
+		}
+		return tasks;
+	}
+
 	const std::vector<Note> & processEvent(const clap_event_header *event, const clap_output_events *eventsOut) {
 		auto newNote = wouldStart(event);
 		if (newNote) return start(*newNote, eventsOut);
 		
+		auto releaseNote = wouldRelease(event);
+		if (releaseNote) return release(*releaseNote);
+
 		tasks.clear();
-		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return tasks;
-		if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
-			auto &noteEvent = *(const clap_event_note *)event;
-			for (auto &n : notes) {
-				if (!n.match(noteEvent)) continue;
-				addTask(n, event->time);
-				n.state = stateUp;
-				n.age = 0;
-				// Only stop if the note ID isn't a wildcard
-				if (noteEvent.note_id >= 0) break;
-			}
-		}
 		return tasks;
 	}
 	
