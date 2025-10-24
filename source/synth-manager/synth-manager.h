@@ -19,7 +19,7 @@ struct SynthManager {
 		size_t voiceIndex;
 		float key, velocity;
 		int16_t port, channel;
-		// Task info
+		// Processing task info
 		State state = stateDown;
 		uint32_t processFrom, processTo;
 		
@@ -47,9 +47,10 @@ struct SynthManager {
 			return age + (timeInBlock - processFrom);
 		}
 	private:
+		friend class SynthManager;
+
 		Note(size_t voiceIndex, const clap_event_note &e) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
 
-		friend class SynthManager;
 		int32_t noteId;
 		int16_t baseKey;
 		size_t age = 0; // since start/legato/up
@@ -111,6 +112,11 @@ struct SynthManager {
 			return {newNote};
 		}
 		return {};
+	}
+
+	// You should call this if you're not using a note-on, so the host gets a NOTE_END
+	void ignore(const Note &newNote, const clap_output_events *eventsOut) {
+		sendNoteEnd(newNote, eventsOut);
 	}
 	
 	const std::vector<Note> & start(const Note &newNote, const clap_output_events *eventsOut) {
@@ -218,8 +224,8 @@ private:
 	std::vector<size_t> voiceIndexQueue;
 	
 	void addTask(Note &n, uint32_t processTo) {
-		if (n.processFrom > processTo) return;
-		if (n.processFrom == processTo && (n.state == stateContinue || n.state == stateRelease)) return;
+		// Skip zero-length tasks for non-event states only
+		if (n.processFrom >= processTo && (n.state == stateContinue || n.state == stateRelease)) return;
 		n.processTo = processTo;
 		tasks.push_back(n);
 		n.age += (processTo - n.processFrom);
