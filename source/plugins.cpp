@@ -1,7 +1,13 @@
+#ifndef LOG_EXPR
+#	include <iostream>
+#	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
+#endif
+
 #include "plugins.h"
 
 #include "clap/clap.h"
 
+#include "./example-plugin/example-plugin.h"
 #include "./example-synth/example-synth.h"
 
 #include <cstring>
@@ -11,15 +17,18 @@ std::string clapBundleResourceDir;
 // ---- Plugin factory ----
 
 static uint32_t pluginFactoryGetPluginCount(const struct clap_plugin_factory *) {
-	return 1;
+	return 2;
 }
 static const clap_plugin_descriptor_t * pluginFactoryGetPluginDescriptor(const struct clap_plugin_factory *factory, uint32_t index) {
-	if (index == 0) return ExampleSynth::getPluginDescriptor();
+	if (index == 0) return ExamplePlugin::getPluginDescriptor();
+	if (index == 1) return ExampleSynth::getPluginDescriptor();
 	return nullptr;
 }
 
 static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_factory *, const clap_host_t *host, const char *pluginId) {
-	if (!std::strcmp(pluginId, ExampleSynth::getPluginDescriptor()->id)) {
+	if (!std::strcmp(pluginId, ExamplePlugin::getPluginDescriptor()->id)) {
+		return ExamplePlugin::create(host);
+	} else if (!std::strcmp(pluginId, ExampleSynth::getPluginDescriptor()->id)) {
 		return ExampleSynth::create(host);
 	}
 	return nullptr;

@@ -1,9 +1,9 @@
-#include "example-synth.h"
-
 #ifndef LOG_EXPR
 #	include <iostream>
 #	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
 #endif
+
+#include "example-synth.h"
 
 clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 	for (uint32_t outPort = 0; outPort < process->audio_outputs_count; ++outPort) {

@@ -189,7 +189,7 @@ struct SynthManager {
 	const std::vector<Note> & release(const Note &releaseNote, uint32_t atBlockTime) {
 		tasks.clear();
 		for (auto &n : notes) {
-			if (!n.match(releaseNote)) {
+			if (n.match(releaseNote)) {
 				addTask(n, atBlockTime);
 				n.state = stateUp;
 				n.age = 0;

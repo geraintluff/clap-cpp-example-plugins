@@ -31,7 +31,7 @@ struct ExampleSynth {
 		};
 		static clap_plugin_descriptor descriptor{
 			.id="uk.co.signalsmith-audio.plugins.example-synth",
-			.name="Example Synth",
+			.name="C++ Example Synth",
 			.vendor="Signalsmith Audio",
 			.url=nullptr,
 			.manual_url=nullptr,

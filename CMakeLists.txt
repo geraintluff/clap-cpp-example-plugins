@@ -30,8 +30,9 @@ set(CLAP_SOURCES
 
 # Add extra dependencies
 add_subdirectory(modules/cbor-walker)
+add_subdirectory(modules/signalsmith-basics)
 add_subdirectory(modules/webview-gui)
-list(APPEND CLAP_LINK_LIBRARIES webview-gui cbor-walker)
+list(APPEND CLAP_LINK_LIBRARIES cbor-walker signalsmith-basics webview-gui)
 
 ################ CLAP & wrappers
 

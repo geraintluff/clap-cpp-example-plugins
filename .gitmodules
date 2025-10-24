@@ -4,3 +4,6 @@
 [submodule "modules/cbor-walker"]
 	path = modules/cbor-walker
 	url = https://github.com/geraintluff/cbor-walker.git
+[submodule "modules/signalsmith-basics"]
+	path = modules/signalsmith-basics
+	url = https://github.com/Signalsmith-Audio/basics.git
