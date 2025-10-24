@@ -193,13 +193,14 @@ struct SynthManager {
 				addTask(n, atBlockTime);
 				n.state = stateUp;
 				n.age = 0;
-				// Only stop if the note ID isn't a wildcard
-				if (releaseNote.noteId >= 0) break;
+				// Stop unless the note ID is a wildcard
+				if (releaseNote.noteId != -1) break;
 			}
 		}
 		return tasks;
 	}
 
+	// Start or stop notes as appropriate
 	const std::vector<Note> & processEvent(const clap_event_header *event, const clap_output_events *eventsOut) {
 		auto newNote = wouldStart(event);
 		if (newNote) return start(*newNote, eventsOut);
@@ -211,6 +212,7 @@ struct SynthManager {
 		return tasks;
 	}
 	
+	// This note has finished - we no longer want any other tasks about it, and its voice can be reassigned
 	void stop(const Note &noteToStop, const clap_output_events *eventsOut) {
 		for (auto &n : notes) {
 			if (n.match(noteToStop)) {

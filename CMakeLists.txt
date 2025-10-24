@@ -19,12 +19,14 @@ include(FetchContent)
 
 project(plugins VERSION 0.1.0)
 
-set(CLAP_NAME_LIST example-synth)
-# Each of these should have `sources/${NAME}.cpp`, which defines `clap_init`/`clap_deinit`/`clap_get_factory`
-# If your bundle has multiple plugins, you could have extra targets for just developing one at a time
-
-set(CLAP_BUNDLE_PREFIX "uk.co.signalsmith-audio.plugins")
+set(CLAP_NAME cpp-example-plugins)
+set(CLAP_BUNDLE_ID "uk.co.signalsmith-audio.plugins.cpp-example-plugins")
 set(CLAP_LINK_LIBRARIES clap)
+
+set(CLAP_SOURCES
+	${CMAKE_CURRENT_LIST_DIR}/source/plugins.cpp
+	${CMAKE_CURRENT_LIST_DIR}/source/example-synth/example-synth.cpp
+)
 
 # Add extra dependencies
 add_subdirectory(modules/cbor-walker)
@@ -60,38 +62,35 @@ FetchContent_MakeAvailable(clap clap-wrapper)
 
 ################ The actual plugin(s)
 
-foreach(NAME ${CLAP_NAME_LIST})
-	add_library(${NAME}_static STATIC)
-	target_compile_definitions(${NAME}_static PRIVATE
-		CLAP_BUNDLE_ID=${TARGET_BUNDLE_PREFIX}.${NAME}
-		CLAP_BUNDLE_VERSION=${CMAKE_PROJECT_VERSION}
-	)
-	target_link_libraries(${NAME}_static PUBLIC
-		${CLAP_LINK_LIBRARIES}
-	)
-	target_sources(${NAME}_static PRIVATE
-		${CMAKE_CURRENT_SOURCE_DIR}/source/${NAME}.cpp
-	)
+add_library(${CLAP_NAME}_static STATIC)
+target_compile_definitions(${CLAP_NAME}_static PRIVATE
+	CLAP_BUNDLE_ID=${CLAP_BUNDLE_ID}
+	CLAP_BUNDLE_VERSION=${CMAKE_PROJECT_VERSION}
+)
+target_link_libraries(${CLAP_NAME}_static PUBLIC
+	${CLAP_LINK_LIBRARIES}
+)
+target_sources(${CLAP_NAME}_static PRIVATE
+	${CLAP_SOURCES}
+)
+make_clapfirst_plugins(
+	TARGET_NAME ${CLAP_NAME}
+	IMPL_TARGET ${CLAP_NAME}_static
 
-	make_clapfirst_plugins(
-		TARGET_NAME ${NAME}
-		IMPL_TARGET ${NAME}_static
+	RESOURCE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/resources"
 
-		RESOURCE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+	OUTPUT_NAME "${CLAP_NAME}"
+	ENTRY_SOURCE ${CMAKE_CURRENT_LIST_DIR}/source/clap_entry.cpp
 
-		OUTPUT_NAME "${NAME}"
-		ENTRY_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/source/clap_entry.cpp
+	BUNDLE_IDENTIFIER "${CLAP_BUNDLE_ID}"
+	BUNDLE_VERSION ${CMAKE_PROJECT_VERSION}
+	WINDOWS_FOLDER_VST3 TRUE
 
-		BUNDLE_IDENTIFIER "${TARGET_BUNDLE_PREFIX}.${NAME}"
-		BUNDLE_VERSION ${CMAKE_PROJECT_VERSION}
-		WINDOWS_FOLDER_VST3 TRUE
+	PLUGIN_FORMATS CLAP VST3 WCLAP # AUV2
+	COPY_AFTER_BUILD FALSE
 
-		PLUGIN_FORMATS CLAP VST3 WCLAP # AUV2
-		COPY_AFTER_BUILD FALSE
-
-		#AUV2_MANUFACTURER_NAME "Signalsmith Audio"
-		#AUV2_MANUFACTURER_CODE "SigA"
-		#AUV2_SUBTYPE_CODE "BdDt"
-		#AUV2_INSTRUMENT_TYPE "aufx"
-	)
-endforeach()
+	#AUV2_MANUFACTURER_NAME "Signalsmith Audio"
+	#AUV2_MANUFACTURER_CODE "SigA"
+	#AUV2_SUBTYPE_CODE "BdDt"
+	#AUV2_INSTRUMENT_TYPE "aufx"
+)

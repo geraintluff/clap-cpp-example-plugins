@@ -37,7 +37,7 @@ bool getHostExtension(const clap_host *host, const char *extId, const HostExtens
 	return hostExt;
 }
 
-// ---- read/write `std::vector<(unsigned?) char>`/`std::string` using CLAP stream(s) ----
+// ---- read/write strings or byte-vectors using CLAP stream(s) ----
 
 template<class Container>
 bool readAllFromStream(Container &byteContainer, const clap_istream *istream, size_t chunkBytes=1024) {
@@ -61,7 +61,7 @@ bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
 	return writeAllToStream((const void *)c.data(), c.size()*sizeof(c[0]), ostream);
 }
 
-bool writeAllToStream(const void *buffer, size_t length, const clap_ostream *ostream) {
+inline bool writeAllToStream(const void *buffer, size_t length, const clap_ostream *ostream) {
 	size_t index = 0;
 	while (length > index) {
 		int64_t result = ostream->write(ostream, (const void *)((size_t)buffer + index), uint64_t(length - index));
