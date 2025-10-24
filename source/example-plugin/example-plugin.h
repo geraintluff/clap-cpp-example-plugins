@@ -5,6 +5,7 @@
 #include "../clap-cpp-tools.h"
 
 #include "signalsmith-basics/chorus.h"
+#include "webview-gui/webview-gui.h"
 
 struct ExamplePlugin {
 	using Plugin = ExamplePlugin;
@@ -38,6 +39,7 @@ struct ExamplePlugin {
 	const clap_host_state *hostState = nullptr;
 	const clap_host_audio_ports *hostAudioPorts = nullptr;
 	const clap_host_params *hostParams = nullptr;
+	const clap_host_gui *hostGui = nullptr;
 
 	signalsmith::basics::ChorusFloat chorus;
 
@@ -53,7 +55,7 @@ struct ExamplePlugin {
 				.cookie=this,
 				.name={}, // assigned below
 				.module={},
-				.min_value=-min,
+				.min_value=min,
 				.max_value=max,
 				.default_value=initial
 			};
@@ -90,6 +92,7 @@ struct ExamplePlugin {
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
 		getHostExtension(host, CLAP_EXT_PARAMS, hostParams);
+		getHostExtension(host, CLAP_EXT_GUI, hostGui);
 		return true;
 	}
 	void pluginDestroy() {
@@ -187,6 +190,25 @@ struct ExamplePlugin {
 				.flush=clapPluginMethod<&Plugin::paramsFlush>(),
 			};
 			return &ext;
+		} else if (!std::strcmp(extId, CLAP_EXT_GUI)) {
+			static const clap_plugin_gui ext{
+				.is_api_supported=clapPluginMethod<&Plugin::guiIsApiSupported>(),
+				.get_preferred_api=clapPluginMethod<&Plugin::guiGetPreferredApi>(),
+				.create=clapPluginMethod<&Plugin::guiCreate>(),
+				.destroy=clapPluginMethod<&Plugin::guiDestroy>(),
+				.set_scale=clapPluginMethod<&Plugin::guiSetScale>(),
+				.get_size=clapPluginMethod<&Plugin::guiGetSize>(),
+				.can_resize=clapPluginMethod<&Plugin::guiCanResize>(),
+				.get_resize_hints=clapPluginMethod<&Plugin::guiGetResizeHints>(),
+				.adjust_size=clapPluginMethod<&Plugin::guiAdjustSize>(),
+				.set_size=clapPluginMethod<&Plugin::guiSetSize>(),
+				.set_parent=clapPluginMethod<&Plugin::guiSetParent>(),
+				.set_transient=clapPluginMethod<&Plugin::guiSetTransient>(),
+				.suggest_title=clapPluginMethod<&Plugin::guiSuggestTitle>(),
+				.show=clapPluginMethod<&Plugin::guiShow>(),
+				.hide=clapPluginMethod<&Plugin::guiHide>(),
+			};
+			return &ext;
 		}
 		return nullptr;
 	}
@@ -265,5 +287,82 @@ struct ExamplePlugin {
 			processEvent(event);
 			eventsOut->try_push(eventsOut, event);
 		}
+	}
+
+	// ---- GUI ----
+	
+	using WebviewGui = webview_gui::WebviewGui;
+	std::unique_ptr<WebviewGui> webview;
+
+	static WebviewGui::Platform clapApiToPlatform(const char *api) {
+		auto platform = WebviewGui::NONE;
+		if (!std::strcmp(api, CLAP_WINDOW_API_WIN32)) platform = WebviewGui::HWND;
+		if (!std::strcmp(api, CLAP_WINDOW_API_COCOA)) platform = WebviewGui::COCOA;
+		if (!std::strcmp(api, CLAP_WINDOW_API_X11)) platform = WebviewGui::X11EMBED;
+		return platform;
+	}
+
+	bool guiIsApiSupported(const char *api, bool isFloating) {
+		if (isFloating) return false;
+		return WebviewGui::supports(clapApiToPlatform(api));
+	}
+	bool guiGetPreferredApi(const char **api, bool *isFloating) {
+		*isFloating = false;
+		*api = nullptr;
+		if (WebviewGui::supports(WebviewGui::HWND)) *api = CLAP_WINDOW_API_WIN32;
+		if (WebviewGui::supports(WebviewGui::COCOA)) *api = CLAP_WINDOW_API_COCOA;
+		if (WebviewGui::supports(WebviewGui::X11EMBED)) *api = CLAP_WINDOW_API_X11;
+		return *api != nullptr;
+	}
+	bool guiCreate(const char *api, bool isFloating) {
+		if (isFloating) return false;
+		webview = WebviewGui::createUnique(clapApiToPlatform(api), "data:text/html,Hello!");
+		if (webview) {
+			uint32_t w, h;
+			guiGetSize(&w, &h);
+			webview->setSize(w, h);
+		}
+		return bool(webview);
+	}
+	void guiDestroy() {}
+	bool guiSetScale(double scale) {
+		return true;
+	}
+	bool guiGetSize(uint32_t *width, uint32_t *height) {
+		*width = 300;
+		*height = 150;
+		return true;
+	}
+	bool guiCanResize() {
+		return false;
+	}
+	bool guiGetResizeHints(clap_gui_resize_hints *hints) {
+		return false;
+	}
+	bool guiAdjustSize(uint32_t *width, uint32_t *height) {
+		return guiGetSize(width, height);
+	}
+	bool guiSetSize(uint32_t w, uint32_t h) {
+		return false;
+	}
+	bool guiSetParent(const clap_window *window) {
+		if (webview) {
+			webview->attach(window->ptr);
+			return true;
+		}
+		return false;
+	}
+	
+	bool guiSetTransient(const clap_window *window) {
+		return false;
+	}
+	
+	void guiSuggestTitle(const char *title) {}
+	
+	bool guiShow() {
+		return true;
+	}
+	bool guiHide() {
+		return true;
 	}
 };
