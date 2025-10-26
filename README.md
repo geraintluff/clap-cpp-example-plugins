@@ -1,5 +1,7 @@
 # C++ CLAP starter project
 
+⚠️  WIP, only properly tested on MacOS so far
+
 This is a starter CLAP project, aims to show how neat the CLAP API is, 
 
 * Example synth (sine plucks) - no external dependencies
