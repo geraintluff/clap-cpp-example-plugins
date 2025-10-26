@@ -1,3 +1,8 @@
+#ifndef LOG_EXPR
+#	include <iostream>
+#	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
+#endif
+
 #include "clap/clap.h"
 
 #include "../plugins.h"
@@ -5,7 +10,10 @@
 #include "../clap-cpp-tools.h"
 
 #include "signalsmith-basics/chorus.h"
+#include "cbor-walker/cbor-walker.h"
 #include "webview-gui/webview-gui.h"
+
+#include <atomic>
 
 struct ExamplePlugin {
 	using Plugin = ExamplePlugin;
@@ -48,6 +56,13 @@ struct ExamplePlugin {
 		clap_param_info info;
 		const char *formatString = "%.2f";
 		
+		// User interactions which we need to send as events to the host
+		std::atomic_flag sentValue = ATOMIC_FLAG_INIT;
+		std::atomic_flag sentGestureStart = ATOMIC_FLAG_INIT;
+		std::atomic_flag sentGestureEnd =ATOMIC_FLAG_INIT;
+
+		std::atomic_flag sentUiState = ATOMIC_FLAG_INIT;
+
 		Param(const char *name, clap_id paramId, double min, double initial, double max) : value(initial) {
 			info = {
 				.id=paramId,
@@ -60,6 +75,58 @@ struct ExamplePlugin {
 				.default_value=initial
 			};
 			std::strncpy(info.name, name, CLAP_NAME_SIZE);
+			
+			sentValue.test_and_set();
+			sentGestureStart.test_and_set();
+			sentGestureEnd.test_and_set();
+		}
+
+		void sendEvents(const clap_output_events *outEvents) {
+			if (!sentGestureStart.test_and_set()) {
+				clap_event_param_gesture event{
+					.header={
+						.size=sizeof(clap_event_param_gesture),
+						.time=0,
+						.space_id=CLAP_CORE_EVENT_SPACE_ID,
+						.type=CLAP_EVENT_PARAM_GESTURE_BEGIN,
+						.flags=CLAP_EVENT_IS_LIVE
+					},
+					.param_id=info.id
+				};
+				outEvents->try_push(outEvents, &event.header);
+			}
+			if (!sentValue.test_and_set()) {
+				clap_event_param_value event{
+					.header={
+						.size=sizeof(clap_event_param_value),
+						.time=0,
+						.space_id=CLAP_CORE_EVENT_SPACE_ID,
+						.type=CLAP_EVENT_PARAM_VALUE,
+						.flags=CLAP_EVENT_IS_LIVE
+					},
+					.param_id=info.id,
+					.cookie=this,
+					.note_id=-1,
+					.port_index=-1,
+					.channel=-1,
+					.key=-1,
+					.value=value
+				};
+				outEvents->try_push(outEvents, &event.header);
+			}
+			if (!sentGestureEnd.test_and_set()) {
+				clap_event_param_gesture event{
+					.header={
+						.size=sizeof(clap_event_param_gesture),
+						.time=0,
+						.space_id=CLAP_CORE_EVENT_SPACE_ID,
+						.type=CLAP_EVENT_PARAM_GESTURE_END,
+						.flags=CLAP_EVENT_IS_LIVE
+					},
+					.param_id=info.id
+				};
+				outEvents->try_push(outEvents, &event.header);
+			}
 		}
 	};
 	Param mix{"mix", 0xCA5CADE5, 0, 0.6, 1};
@@ -120,11 +187,13 @@ struct ExamplePlugin {
 				// if provided, it's the parameter
 				auto &param = *(Param *)eventParam.cookie;
 				param.value = eventParam.value;
+				param.sentUiState.clear();
 			} else {
 				// Otherwise, match the ID
 				for (auto *param : params) {
 					if (eventParam.param_id == param->info.id) {
 						param->value = eventParam.value;
+						param->sentUiState.clear();
 						break;
 					}
 				}
@@ -132,7 +201,9 @@ struct ExamplePlugin {
 
 			// Request a callback so we can tell the host our state is dirty
 			stateDirty = true;
-			if (hostState) host->request_callback(host);
+			// Tell the UI as well
+			sentWebviewState.clear();
+			host->request_callback(host);
 		}
 	}
 	clap_process_status pluginProcess(const clap_process *process) {
@@ -155,7 +226,11 @@ struct ExamplePlugin {
 		chorus.detune = detune.value;
 		chorus.stereo = stereo.value;
 		chorus.process(audioInput.data32, audioOutput.data32, process->frames_count);
-		
+
+		for (auto *param : params) {
+			param->sendEvents(eventsOut);
+		}
+
 		return CLAP_PROCESS_CONTINUE;
 	}
 
@@ -165,6 +240,7 @@ struct ExamplePlugin {
 			hostState->mark_dirty(host);
 			stateDirty = false;
 		}
+		webviewSendIfNeeded();
 	}
 
 	const void * pluginGetExtension(const char *extId) {
@@ -216,13 +292,29 @@ struct ExamplePlugin {
 	// ---- state save/load ----
 	
 	bool stateSave(const clap_ostream_t *stream) {
-		// very basic string serialisation
-		std::string stateString = "hello";
-		return writeAllToStream(stateString, stream);
+		std::vector<unsigned char> bytes;
+		signalsmith::cbor::CborWriter cbor{bytes};
+		cbor.openMap(4);
+		for (auto *param : params) {
+			cbor.addInt(param->info.id); // CBOR keys can be any type
+			cbor.addFloat(param->value);
+		}
+		return writeAllToStream(bytes, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
-		std::string stateString;
-		if (!readAllFromStream(stateString, stream) || stateString.empty()) return false;
+		std::vector<unsigned char> bytes;
+		if (!readAllFromStream(bytes, stream) || bytes.empty()) return false;
+
+		using Cbor = signalsmith::cbor::CborWalker;
+		Cbor cbor{bytes};
+		if (!cbor.isMap()) return false;
+		cbor.forEachPair([&](Cbor key, Cbor value){
+			for (auto *param : params) {
+				if (uint32_t(key) == param->info.id) {
+					param->value = double(value);
+				}
+			}
+		});
 		return true;
 	}
 
@@ -287,12 +379,16 @@ struct ExamplePlugin {
 			processEvent(event);
 			eventsOut->try_push(eventsOut, event);
 		}
+		for (auto *param : params) {
+			param->sendEvents(eventsOut);
+		}
 	}
 
 	// ---- GUI ----
 	
 	using WebviewGui = webview_gui::WebviewGui;
 	std::unique_ptr<WebviewGui> webview;
+	std::atomic_flag sentWebviewState = ATOMIC_FLAG_INIT;
 
 	static WebviewGui::Platform clapApiToPlatform(const char *api) {
 		auto platform = WebviewGui::NONE;
@@ -316,11 +412,16 @@ struct ExamplePlugin {
 	}
 	bool guiCreate(const char *api, bool isFloating) {
 		if (isFloating) return false;
-		webview = WebviewGui::createUnique(clapApiToPlatform(api), "data:text/html,Hello!");
+		webview = WebviewGui::createUnique(clapApiToPlatform(api), "/", [this](const char *path, WebviewGui::Resource &resource){
+			return webviewGetResource(path, resource);
+		});
 		if (webview) {
 			uint32_t w, h;
 			guiGetSize(&w, &h);
 			webview->setSize(w, h);
+			webview->receive = [&](const unsigned char *bytes, size_t length){
+				webviewReceive(bytes, length);
+			};
 		}
 		return bool(webview);
 	}
@@ -330,7 +431,7 @@ struct ExamplePlugin {
 	}
 	bool guiGetSize(uint32_t *width, uint32_t *height) {
 		*width = 300;
-		*height = 150;
+		*height = 200;
 		return true;
 	}
 	bool guiCanResize() {
@@ -364,5 +465,79 @@ struct ExamplePlugin {
 	}
 	bool guiHide() {
 		return true;
+	}
+	
+	bool webviewGetResource(const char *path, WebviewGui::Resource &resource);
+	bool webviewReceive(const unsigned char *bytes, size_t length) {
+		using Cbor = signalsmith::cbor::CborWalker;
+		
+		auto updateParam = [&](Param &param, Cbor cbor){
+			cbor.forEachPair([&](Cbor key, Cbor value){
+				auto keyString = key.utf8View();
+				if (keyString == "value" && value.isNumber()) {
+					param.value = value;
+					param.sentValue.clear();
+				} else if (keyString == "gesture") {
+					if (bool(value)) {
+						param.sentGestureStart.clear();
+					} else {
+						param.sentGestureEnd.clear();
+					}
+				}
+			});
+		};
+		
+		Cbor cbor{bytes, length};
+		if (cbor.utf8View() == "ready") {
+			for (auto *param : params) {
+				// Resend everything
+				param->sentUiState.clear();
+			}
+			sentWebviewState.clear();
+			webviewSendIfNeeded();
+			return true;
+		}
+		
+		cbor.forEachPair([&](Cbor key, Cbor value){
+			auto keyString = key.utf8View();
+			if (keyString == "mix") {
+				updateParam(mix, value);
+			} else if (keyString == "depth") {
+				updateParam(depthMs, value);
+			} else if (keyString == "detune") {
+				updateParam(detune, value);
+			} else if (keyString == "stereo") {
+				updateParam(stereo, value);
+			}
+		});
+
+		if (hostParams) hostParams->request_flush(host);
+
+		return !cbor.error();
+	}
+	void webviewSendIfNeeded() {
+		if (!webview) return;
+		if (sentWebviewState.test_and_set()) return;
+
+		std::vector<unsigned char> bytes;
+		signalsmith::cbor::CborWriter cbor{bytes};
+		cbor.openMap();
+		
+		auto updateParam = [&](const char *key, Param &param){
+			if (param.sentUiState.test_and_set()) return;
+			cbor.addUtf8(key);
+			cbor.openMap(1);
+			cbor.addUtf8("value");
+			cbor.addFloat(param.value);
+		};
+		updateParam("mix", mix);
+		updateParam("depth", depthMs);
+		updateParam("detune", detune);
+		updateParam("stereo", stereo);
+		cbor.close();
+		
+		webview->send(bytes.data(), bytes.size());
+		
+		LOG_EXPR(bytes.size());
 	}
 };

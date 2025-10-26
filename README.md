@@ -1,8 +1,14 @@
 # C++ CLAP starter project
 
-This is a starter CLAP project, mostly for internal use, but perhaps helpful for others too. 🙂
+This is a starter CLAP project, aims to show how neat the CLAP API is, 
 
-It aims to show how neat the CLAP API is, so it uses it directly (no `clap-helpers`).
+* Example synth (sine plucks) - no external dependencies
+* Example audio plugin (chorus) - uses dependencies in `modules/`
+	* `signalsmith-basics` for the chorus itself
+	* `cbor-walker` for saving/loading/sending state as CBOR
+	* `webview-gui` for
+
+The CMake build uses [`clap-wrapper`](https://github.com/free-audio/clap-wrapper) to (optionally) produce VST3 plugins from the CLAP. 
 
 ## Building
 
@@ -26,8 +32,8 @@ For personal convenience when developing on my Mac, I've included a `Makefile` w
 
 ## Making it your own
 
-To remove the default plugin(s) and start making your own, change `CLAP_NAME_LIST`/`CLAP_BUNDLE_PREFIX` in `CMakeLists.txt`, and rename/copy the `source/???.cpp` files to match.
+* change `CLAP_NAME`/`CLAP_BUNDLE_ID` in `CMakeLists.txt`
+* remove extra dependencies from `modules/` (using `git rm`, since they're submodules)
+* also remove dependencies from `CMakeLists.txt` (under "This specific project")
+* remove unwanted subdirectories from `source/`, and change `CLAP_SOURCES` in `CMakeLists.txt` 
 
-You can also remove extra dependencies (e.g. the webview stuff) just below that in the `CMakeLists.txt`.
-
-You can also remove any subdirectories you're not using from `source/`.
