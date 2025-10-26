@@ -1,8 +1,3 @@
-#ifndef LOG_EXPR
-#	include <iostream>
-#	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
-#endif
-
 #include "clap/clap.h"
 
 #include "../plugins.h"
@@ -537,7 +532,5 @@ struct ExamplePlugin {
 		cbor.close();
 		
 		webview->send(bytes.data(), bytes.size());
-		
-		LOG_EXPR(bytes.size());
 	}
 };
