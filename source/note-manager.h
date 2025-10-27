@@ -11,7 +11,7 @@ When you hand it an event (and it returns `true`), it returns tasks to process a
 
 It implements voice-stealing based on time since a note's release (if released) or attack.  This is represented by a note-task with `stateKill`.  The length (`processFrom`/`processTo`) of this task will not overlap with the new note - which unavoidably means it *may* be 0, in which case you can process a bit more to avoid clicks at your discretion.
 */
-struct SynthManager {
+struct NoteManager {
 	enum State{stateDown, stateLegato, stateContinue, stateUp, stateRelease, stateKill};
 
 	struct Note {
@@ -52,17 +52,17 @@ struct SynthManager {
 		size_t ageAt(uint32_t timeInBlock) const {
 			return age + (timeInBlock - processFrom);
 		}
-	private:
-		friend class SynthManager;
-
-		Note(size_t voiceIndex, const clap_event_note &e) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
-
+		
 		int32_t noteId;
 		int16_t baseKey;
+	private:
+		friend class NoteManager;
+
+		Note(size_t voiceIndex, const clap_event_note &e) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
 		size_t age = 0; // since start/legato/up
 	};
 	
-	SynthManager(size_t polyphony=64) {
+	NoteManager(size_t polyphony=64) {
 		notes.reserve(polyphony);
 		tasks.reserve(polyphony);
 		for (size_t i = 0; i < polyphony; ++i) {

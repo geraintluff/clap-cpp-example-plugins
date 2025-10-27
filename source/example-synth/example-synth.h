@@ -4,8 +4,7 @@
 
 // Helpers for concisely using CLAP from C++
 #include "../clap-cpp-tools.h"
-
-#include "./synth-manager.h"
+#include "../note-manager.h"
 
 #include <cstring>
 #include <cmath>
@@ -55,7 +54,7 @@ struct ExampleSynth {
 	const clap_host_params *hostParams = nullptr;
 
 	std::vector<Osc> oscillators;
-	SynthManager synthManager;
+	NoteManager noteManager;
 	
 	struct {
 		clap_id id = 0xCA55E77E;
@@ -67,7 +66,7 @@ struct ExampleSynth {
 	} polyphony;
 
 	ExampleSynth(const clap_host *host) : host(host) {
-		oscillators.resize(synthManager.polyphony());
+		oscillators.resize(noteManager.polyphony());
 	}
 	
 	const clap_plugin clapPlugin{
@@ -107,7 +106,7 @@ struct ExampleSynth {
 	void pluginStopProcessing() {
 	}
 	void pluginReset() {
-		synthManager.reset();
+		noteManager.reset();
 	}
 	void processEvent(const clap_event_header *event) {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;

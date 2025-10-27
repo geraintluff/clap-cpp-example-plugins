@@ -7,7 +7,8 @@
 
 #include "clap/clap.h"
 
-#include "./example-plugin/example-plugin.h"
+#include "./example-audio-plugin/example-audio-plugin.h"
+#include "./example-note-plugin/example-note-plugin.h"
 #include "./example-synth/example-synth.h"
 
 #include <cstring>
@@ -17,17 +18,20 @@ std::string clapBundleResourceDir;
 // ---- Plugin factory ----
 
 static uint32_t pluginFactoryGetPluginCount(const struct clap_plugin_factory *) {
-	return 2;
+	return 3;
 }
 static const clap_plugin_descriptor_t * pluginFactoryGetPluginDescriptor(const struct clap_plugin_factory *factory, uint32_t index) {
-	if (index == 0) return ExamplePlugin::getPluginDescriptor();
-	if (index == 1) return ExampleSynth::getPluginDescriptor();
+	if (index == 0) return ExampleAudioPlugin::getPluginDescriptor();
+	if (index == 1) return ExampleNotePlugin::getPluginDescriptor();
+	if (index == 2) return ExampleSynth::getPluginDescriptor();
 	return nullptr;
 }
 
 static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_factory *, const clap_host_t *host, const char *pluginId) {
-	if (!std::strcmp(pluginId, ExamplePlugin::getPluginDescriptor()->id)) {
-		return ExamplePlugin::create(host);
+	if (!std::strcmp(pluginId, ExampleAudioPlugin::getPluginDescriptor()->id)) {
+		return ExampleAudioPlugin::create(host);
+	} else if (!std::strcmp(pluginId, ExampleNotePlugin::getPluginDescriptor()->id)) {
+		return ExampleNotePlugin::create(host);
 	} else if (!std::strcmp(pluginId, ExampleSynth::getPluginDescriptor()->id)) {
 		return ExampleSynth::create(host);
 	}
@@ -38,7 +42,7 @@ static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_
 
 bool clapEntryInit(const char *path) {
 	clapBundleResourceDir = path;
-#if defined(__APPLE__) && __APPLE__ && defined(TARGET_OS_OSX) && TARGET_OS_OSX
+#if defined(__APPLE__) && (!defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE)
 	clapBundleResourceDir += "/Contents/Resources";
 #endif
 	return true;

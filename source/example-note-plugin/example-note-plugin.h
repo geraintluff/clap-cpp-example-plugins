@@ -3,48 +3,54 @@
 #include "../plugins.h"
 // Helpers for concisely using CLAP from C++
 #include "../clap-cpp-tools.h"
+#include "../note-manager.h"
 
-#include "signalsmith-basics/chorus.h"
 #include "cbor-walker/cbor-walker.h"
-#include "webview-gui/webview-gui.h"
+#include "webview-gui/clap-webview-gui.h"
 
 #include <atomic>
+#include <random>
 
-struct ExamplePlugin {
-	using Plugin = ExamplePlugin;
+struct ExampleNotePlugin {
+	using Plugin = ExampleNotePlugin;
 	
 	static const clap_plugin_descriptor * getPluginDescriptor() {
 		static const char * features[] = {
-			CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
-			CLAP_PLUGIN_FEATURE_STEREO,
+			CLAP_PLUGIN_FEATURE_NOTE_EFFECT,
 			nullptr
 		};
 		static clap_plugin_descriptor descriptor{
-			.id="uk.co.signalsmith-audio.plugins.example-plugin",
-			.name="C++ Example Plugin (Chorus)",
+			.id="uk.co.signalsmith-audio.plugins.example-note-plugin",
+			.name="C++ Example Note Plugin",
 			.vendor="Signalsmith Audio",
 			.url=nullptr,
 			.manual_url=nullptr,
 			.support_url=nullptr,
 			.version="1.0.0",
-			.description="The plugin from a starter CLAP project",
+			.description="Note plugin from a starter CLAP project",
 			.features=features
 		};
 		return &descriptor;
 	};
 
 	static const clap_plugin * create(const clap_host *host) {
-		return &(new ExamplePlugin(host))->clapPlugin;
+		return &(new Plugin(host))->clapPlugin;
 	}
 	
 	const clap_host *host;
 	// Extensions aren't filled out until `.pluginInit()`
 	const clap_host_state *hostState = nullptr;
 	const clap_host_audio_ports *hostAudioPorts = nullptr;
+	const clap_host_note_ports *hostNotePorts = nullptr;
 	const clap_host_params *hostParams = nullptr;
-	const clap_host_gui *hostGui = nullptr;
 
-	signalsmith::basics::ChorusFloat chorus;
+	uint32_t noteIdCounter = 0;
+	struct OutputNote {
+		int32_t noteId;
+	};
+	std::vector<OutputNote> outputNotes;
+	NoteManager noteManager{512};
+	double sampleRate = 1;
 
 	struct Param {
 		double value = 0;
@@ -124,15 +130,10 @@ struct ExamplePlugin {
 			}
 		}
 	};
-	Param mix{"mix", 0xCA5CADE5, 0, 0.6, 1};
-	Param depthMs{"depth", 0xBA55FEED, 2, 15, 50};
-	Param detune{"detune", 0xCA55E77E, 1, 6, 30};
-	Param stereo{"stereo", 0x0FF51DE5, 0, 1, 2};
-	std::array<Param *, 4> params = {&mix, &depthMs, &detune, &stereo};
+	std::array<Param *, 0> params;
 	
-	ExamplePlugin(const clap_host *host) : host(host) {
-		depthMs.formatString = "%.1f ms";
-		detune.formatString = "%.0f cents";
+	ExampleNotePlugin(const clap_host *host) : host(host) {
+		outputNotes.resize(noteManager.polyphony());
 	}
 	
 	const clap_plugin clapPlugin{
@@ -153,15 +154,16 @@ struct ExamplePlugin {
 	bool pluginInit() {
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
+		getHostExtension(host, CLAP_EXT_NOTE_PORTS, hostNotePorts);
 		getHostExtension(host, CLAP_EXT_PARAMS, hostParams);
-		getHostExtension(host, CLAP_EXT_GUI, hostGui);
+		webview.init(&clapPlugin, host, clapBundleResourceDir /* defined in plugins.h */);
 		return true;
 	}
 	void pluginDestroy() {
 		delete this;
 	}
 	bool pluginActivate(double sRate, uint32_t minFrames, uint32_t maxFrames) {
-		chorus.configure(sRate, maxFrames, 2);
+		sampleRate = sRate;
 		return true;
 	}
 	void pluginDeactivate() {
@@ -172,7 +174,7 @@ struct ExamplePlugin {
 	void pluginStopProcessing() {
 	}
 	void pluginReset() {
-		chorus.reset();
+		noteManager.reset();
 	}
 	void processEvent(const clap_event_header *event) {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;
@@ -201,31 +203,69 @@ struct ExamplePlugin {
 			host->request_callback(host);
 		}
 	}
+	std::uniform_real_distribution<double> unitReal{0, 1};
 	clap_process_status pluginProcess(const clap_process *process) {
-		auto &audioInput = process->audio_inputs[0];
-		auto &audioOutput = process->audio_outputs[0];
+		auto *eventsOut = process->out_events;
+
+		noteManager.startBlock();
+		auto processNoteTasks = [&](auto &tasks) {
+			for (auto &note : tasks) {
+				auto &outNote = outputNotes[note.voiceIndex];
+				
+				if (note.state == NoteManager::stateDown || note.state == NoteManager::stateLegato) {
+					outNote.noteId = int32_t(noteIdCounter++);
+					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
+					clap_event_note event{
+						.header={
+							.size=sizeof(clap_event_note),
+							.time=note.processFrom,
+							.space_id=CLAP_CORE_EVENT_SPACE_ID,
+							.type=CLAP_EVENT_NOTE_ON,
+							.flags=0
+						},
+						.note_id=outNote.noteId,
+						.port_index=note.port,
+						.channel=note.channel,
+						.key=note.baseKey,
+						.velocity=unitReal(randomEngine)
+					};
+					eventsOut->try_push(eventsOut, &event.header);
+				} else if (note.state == NoteManager::stateUp) {
+					noteManager.stop(note, process->out_events);
+					clap_event_note event{
+						.header={
+							.size=sizeof(clap_event_note),
+							.time=note.processFrom,
+							.space_id=CLAP_CORE_EVENT_SPACE_ID,
+							.type=CLAP_EVENT_NOTE_OFF,
+							.flags=0
+						},
+						.note_id=outNote.noteId,
+						.port_index=note.port,
+						.channel=note.channel,
+						.key=note.baseKey,
+						.velocity=note.velocity
+					};
+					eventsOut->try_push(eventsOut, &event.header);
+				}
+			}
+		};
 
 		auto *eventsIn = process->in_events;
-		auto *eventsOut = process->out_events;
 		uint32_t eventCount = eventsIn->size(eventsIn);
-		// We could (should?) split the processing up and apply these events partway through the block
-		// but for simplicity here we don't support sample-accurate automation
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
+			if (auto newNote = noteManager.wouldStart(event)) {
+				bool foundLegato = false;
+				processNoteTasks(noteManager.start(*newNote, eventsOut));
+			} else if (auto endNote = noteManager.wouldRelease(event)) {
+				processNoteTasks(noteManager.release(*endNote));
+			}
 			processEvent(event);
 			eventsOut->try_push(eventsOut, event);
 		}
 		
-		chorus.mix = mix.value;
-		chorus.depthMs = depthMs.value;
-		chorus.detune = detune.value;
-		chorus.stereo = stereo.value;
-		chorus.process(audioInput.data32, audioOutput.data32, process->frames_count);
-
-		for (auto *param : params) {
-			param->sendEvents(eventsOut);
-		}
-
+		processNoteTasks(noteManager.processTo(process->frames_count));
 		return CLAP_PROCESS_CONTINUE;
 	}
 
@@ -251,6 +291,12 @@ struct ExamplePlugin {
 				.get=clapPluginMethod<&Plugin::audioPortsGet>(),
 			};
 			return &ext;
+		} else if (!std::strcmp(extId, CLAP_EXT_NOTE_PORTS)) {
+			static const clap_plugin_note_ports ext{
+				.count=clapPluginMethod<&Plugin::notePortsCount>(),
+				.get=clapPluginMethod<&Plugin::notePortsGet>(),
+			};
+			return &ext;
 		} else if (!std::strcmp(extId, CLAP_EXT_PARAMS)) {
 			static const clap_plugin_params ext{
 				.count=clapPluginMethod<&Plugin::paramsCount>(),
@@ -261,27 +307,14 @@ struct ExamplePlugin {
 				.flush=clapPluginMethod<&Plugin::paramsFlush>(),
 			};
 			return &ext;
-		} else if (!std::strcmp(extId, CLAP_EXT_GUI)) {
-			static const clap_plugin_gui ext{
-				.is_api_supported=clapPluginMethod<&Plugin::guiIsApiSupported>(),
-				.get_preferred_api=clapPluginMethod<&Plugin::guiGetPreferredApi>(),
-				.create=clapPluginMethod<&Plugin::guiCreate>(),
-				.destroy=clapPluginMethod<&Plugin::guiDestroy>(),
-				.set_scale=clapPluginMethod<&Plugin::guiSetScale>(),
-				.get_size=clapPluginMethod<&Plugin::guiGetSize>(),
-				.can_resize=clapPluginMethod<&Plugin::guiCanResize>(),
-				.get_resize_hints=clapPluginMethod<&Plugin::guiGetResizeHints>(),
-				.adjust_size=clapPluginMethod<&Plugin::guiAdjustSize>(),
-				.set_size=clapPluginMethod<&Plugin::guiSetSize>(),
-				.set_parent=clapPluginMethod<&Plugin::guiSetParent>(),
-				.set_transient=clapPluginMethod<&Plugin::guiSetTransient>(),
-				.suggest_title=clapPluginMethod<&Plugin::guiSuggestTitle>(),
-				.show=clapPluginMethod<&Plugin::guiShow>(),
-				.hide=clapPluginMethod<&Plugin::guiHide>(),
+		} else if (!std::strcmp(extId, webview_gui::CLAP_EXT_WEBVIEW)) {
+			static const webview_gui::clap_plugin_webview ext{
+				.get_uri=clapPluginMethod<&Plugin::webviewGetUri>(),
+				.receive=clapPluginMethod<&Plugin::webviewReceive>(),
 			};
 			return &ext;
 		}
-		return nullptr;
+		return webview.getExtension(extId);
 	}
 	
 	// ---- state save/load ----
@@ -315,18 +348,26 @@ struct ExamplePlugin {
 
 	// ---- audio ports ----
 
+	// some hosts (*cough* REAPER *cough*) give us a stereo input/output port unless we support this extension to say we have none
 	uint32_t audioPortsCount(bool isInput) {
-		return 1;
+		return 0;
 	}
 	bool audioPortsGet(uint32_t index, bool isInput, clap_audio_port_info *info) {
-		if (index > audioPortsCount(isInput)) return false;
+		return false;
+	}
+
+	// ---- note ports ----
+
+	uint32_t notePortsCount(bool isInput) {
+		return 1;
+	}
+	bool notePortsGet(uint32_t index, bool isInput, clap_note_port_info *info) {
+		if (index > notePortsCount(isInput)) return false;
 		*info = {
-			.id=0xF0CACC1A,
-			.name={'m', 'a', 'i', 'n'},
-			.flags=CLAP_AUDIO_PORT_IS_MAIN + CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE,
-			.channel_count=2,
-			.port_type=CLAP_PORT_STEREO,
-			.in_place_pair=CLAP_INVALID_ID
+			.id=0xC0DEBA55,
+			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,
+			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
+			.name={'n', 'o', 't', 'e', 's'}
 		};
 		return true;
 	}
@@ -381,89 +422,19 @@ struct ExamplePlugin {
 
 	// ---- GUI ----
 	
-	using WebviewGui = webview_gui::WebviewGui;
-	std::unique_ptr<WebviewGui> webview;
+	static void * pluginToWebview(const clap_plugin *plugin) {
+		return &((Plugin *)plugin->plugin_data)->webview;
+	}
+	webview_gui::ClapWebviewGui<pluginToWebview> webview;
 	std::atomic_flag sentWebviewState = ATOMIC_FLAG_INIT;
-
-	static WebviewGui::Platform clapApiToPlatform(const char *api) {
-		auto platform = WebviewGui::NONE;
-		if (!std::strcmp(api, CLAP_WINDOW_API_WIN32)) platform = WebviewGui::HWND;
-		if (!std::strcmp(api, CLAP_WINDOW_API_COCOA)) platform = WebviewGui::COCOA;
-		if (!std::strcmp(api, CLAP_WINDOW_API_X11)) platform = WebviewGui::X11EMBED;
-		return platform;
+	
+	int32_t webviewGetUri(char *uri, uint32_t uri_capacity) {
+		static constexpr const char *path = "/example-note-effect/index.html";
+		std::strncpy(uri, path, uri_capacity);
+		return int32_t(std::strlen(path));
 	}
 
-	bool guiIsApiSupported(const char *api, bool isFloating) {
-		if (isFloating) return false;
-		return WebviewGui::supports(clapApiToPlatform(api));
-	}
-	bool guiGetPreferredApi(const char **api, bool *isFloating) {
-		*isFloating = false;
-		*api = nullptr;
-		if (WebviewGui::supports(WebviewGui::HWND)) *api = CLAP_WINDOW_API_WIN32;
-		if (WebviewGui::supports(WebviewGui::COCOA)) *api = CLAP_WINDOW_API_COCOA;
-		if (WebviewGui::supports(WebviewGui::X11EMBED)) *api = CLAP_WINDOW_API_X11;
-		return *api != nullptr;
-	}
-	bool guiCreate(const char *api, bool isFloating) {
-		if (isFloating) return false;
-		webview = WebviewGui::createUnique(clapApiToPlatform(api), "/", [this](const char *path, WebviewGui::Resource &resource){
-			return webviewGetResource(path, resource);
-		});
-		if (webview) {
-			uint32_t w, h;
-			guiGetSize(&w, &h);
-			webview->setSize(w, h);
-			webview->receive = [&](const unsigned char *bytes, size_t length){
-				webviewReceive(bytes, length);
-			};
-		}
-		return bool(webview);
-	}
-	void guiDestroy() {}
-	bool guiSetScale(double scale) {
-		return true;
-	}
-	bool guiGetSize(uint32_t *width, uint32_t *height) {
-		*width = 300;
-		*height = 200;
-		return true;
-	}
-	bool guiCanResize() {
-		return false;
-	}
-	bool guiGetResizeHints(clap_gui_resize_hints *hints) {
-		return false;
-	}
-	bool guiAdjustSize(uint32_t *width, uint32_t *height) {
-		return guiGetSize(width, height);
-	}
-	bool guiSetSize(uint32_t w, uint32_t h) {
-		return false;
-	}
-	bool guiSetParent(const clap_window *window) {
-		if (webview) {
-			webview->attach(window->ptr);
-			return true;
-		}
-		return false;
-	}
-	
-	bool guiSetTransient(const clap_window *window) {
-		return false;
-	}
-	
-	void guiSuggestTitle(const char *title) {}
-	
-	bool guiShow() {
-		return true;
-	}
-	bool guiHide() {
-		return true;
-	}
-	
-	bool webviewGetResource(const char *path, WebviewGui::Resource &resource);
-	bool webviewReceive(const unsigned char *bytes, size_t length) {
+	bool webviewReceive(const void *bytes, uint32_t length) {
 		using Cbor = signalsmith::cbor::CborWalker;
 		
 		auto updateParam = [&](Param &param, Cbor cbor){
@@ -482,7 +453,7 @@ struct ExamplePlugin {
 			});
 		};
 		
-		Cbor cbor{bytes, length};
+		Cbor cbor{(const unsigned char *)bytes, length};
 		if (cbor.utf8View() == "ready") {
 			for (auto *param : params) {
 				// Resend everything
@@ -495,15 +466,15 @@ struct ExamplePlugin {
 		
 		cbor.forEachPair([&](Cbor key, Cbor value){
 			auto keyString = key.utf8View();
-			if (keyString == "mix") {
-				updateParam(mix, value);
-			} else if (keyString == "depth") {
-				updateParam(depthMs, value);
-			} else if (keyString == "detune") {
-				updateParam(detune, value);
-			} else if (keyString == "stereo") {
-				updateParam(stereo, value);
-			}
+//			if (keyString == "mix") {
+//				updateParam(mix, value);
+//			} else if (keyString == "depth") {
+//				updateParam(depthMs, value);
+//			} else if (keyString == "detune") {
+//				updateParam(detune, value);
+//			} else if (keyString == "stereo") {
+//				updateParam(stereo, value);
+//			}
 		});
 
 		if (hostParams) hostParams->request_flush(host);
@@ -511,7 +482,6 @@ struct ExamplePlugin {
 		return !cbor.error();
 	}
 	void webviewSendIfNeeded() {
-		if (!webview) return;
 		if (sentWebviewState.test_and_set()) return;
 
 		std::vector<unsigned char> bytes;
@@ -525,12 +495,14 @@ struct ExamplePlugin {
 			cbor.addUtf8("value");
 			cbor.addFloat(param.value);
 		};
-		updateParam("mix", mix);
-		updateParam("depth", depthMs);
-		updateParam("detune", detune);
-		updateParam("stereo", stereo);
+//		updateParam("mix", mix);
+//		updateParam("depth", depthMs);
+//		updateParam("detune", detune);
+//		updateParam("stereo", stereo);
 		cbor.close();
 		
-		webview->send(bytes.data(), bytes.size());
+		webview.send(bytes.data(), bytes.size());
 	}
+	
+	std::default_random_engine randomEngine{std::random_device{}()};
 };

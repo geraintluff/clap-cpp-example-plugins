@@ -29,7 +29,7 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 
 	auto &synthOut = process->audio_outputs[0];
 	
-	synthManager.startBlock();
+	noteManager.startBlock();
 	auto processNoteTasks = [&](auto &tasks) {
 		float sustainAmp = std::pow(10, sustainDb.value/20);
 		
@@ -42,11 +42,11 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			auto portamentoMs = 10;
 			auto portamentoSlew = 1/(portamentoMs*0.001f*sampleRate + 1);
 
-			if (note.state == SynthManager::stateDown) {
+			if (note.state == NoteManager::stateDown) {
 				// Start new note
 				osc = {};
 				osc.normFreq = targetNormFreq;
-			} else if (note.state == SynthManager::stateLegato) {
+			} else if (note.state == NoteManager::stateLegato) {
 				// Restart attack from wherever the decay got to
 				osc.attackRelease *= osc.decay;
 				osc.decay = 1;
@@ -60,7 +60,7 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
 			
 			auto processTo = note.processTo;
-			if (note.state == SynthManager::stateKill) { // This note is about to be stolen
+			if (note.state == NoteManager::stateKill) { // This note is about to be stolen
 				// minimum 1ms fade-out
 				processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
 				// unless we'd hit the end of the block
@@ -86,7 +86,7 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			osc.phase -= std::floor(osc.phase);
 
 			if (note.released() && osc.canStop()) {
-				synthManager.stop(note, process->out_events);
+				noteManager.stop(note, process->out_events);
 			}
 		}
 	};
@@ -96,28 +96,28 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 	uint32_t eventCount = eventsIn->size(eventsIn);
 	for (uint32_t i = 0; i < eventCount; ++i) {
 		auto *event = eventsIn->get(eventsIn, i);
-		if (auto newNote = synthManager.wouldStart(event)) {
+		if (auto newNote = noteManager.wouldStart(event)) {
 			bool foundLegato = false;
 			if (polyphony.value == 0) {
-				for (auto &otherNote : synthManager) {
+				for (auto &otherNote : noteManager) {
 					if (!otherNote.released() || otherNote.ageAt(event->time) < sampleRate*0.01f) {
-						processNoteTasks(synthManager.legato(*newNote, otherNote, eventsOut));
+						processNoteTasks(noteManager.legato(*newNote, otherNote, eventsOut));
 						foundLegato = true;
 						break;
 					}
 				}
 			}
 			if (!foundLegato) {
-				processNoteTasks(synthManager.start(*newNote, eventsOut));
+				processNoteTasks(noteManager.start(*newNote, eventsOut));
 			}
-		} else if (auto endNote = synthManager.wouldRelease(event)) {
-			processNoteTasks(synthManager.release(*endNote));
+		} else if (auto endNote = noteManager.wouldRelease(event)) {
+			processNoteTasks(noteManager.release(*endNote));
 		}
 		processEvent(event);
 		eventsOut->try_push(eventsOut, event);
 	}
 	
-	processNoteTasks(synthManager.processTo(process->frames_count));
+	processNoteTasks(noteManager.processTo(process->frames_count));
 	
 	return CLAP_PROCESS_CONTINUE;
 }
