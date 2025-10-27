@@ -17,7 +17,7 @@ include(FetchContent)
 
 ################ This specific project
 
-project(plugins VERSION 0.1.0)
+project(signalsmith-clap-cpp VERSION 0.1.0)
 
 set(CLAP_NAME cpp-example-plugins)
 set(CLAP_BUNDLE_ID "uk.co.signalsmith-audio.plugins.cpp-example-plugins")
@@ -29,70 +29,77 @@ set(CLAP_SOURCES
 	${CMAKE_CURRENT_LIST_DIR}/source/example-synth/example-synth.cpp
 )
 
+add_library(signalsmith-clap-base INTERFACE)
+target_include_directories(signalsmith-clap-base INTERFACE ${CMAKE_CURRENT_LIST_DIR}/include)
+
 # Add extra dependencies
 add_subdirectory(modules/cbor-walker)
 add_subdirectory(modules/signalsmith-basics)
 add_subdirectory(modules/webview-gui)
-list(APPEND CLAP_LINK_LIBRARIES cbor-walker signalsmith-basics webview-gui)
+target_link_libraries(signalsmith-clap-base INTERFACE cbor-walker signalsmith-basics webview-gui)
 
 ################ CLAP & wrappers
 
-set(CLAP_WRAPPER_OUTPUT_NAME clap-wrapper-target)
-set(CLAP_WRAPPER_DONT_ADD_TARGETS TRUE)
-if(NOT DEFINED VST3_SDK_ROOT)
-	if(EMSCRIPTEN)
-		# don't download the VST3 SDK
-		set(VST3_SDK_ROOT "./dummy/vst3sdk/path")
-	else()
-		set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE)
+if (PROJECT_IS_TOP_LEVEL)
+	set(CLAP_WRAPPER_OUTPUT_NAME clap-wrapper-target)
+	set(CLAP_WRAPPER_DONT_ADD_TARGETS TRUE)
+	if(NOT DEFINED VST3_SDK_ROOT)
+		if(EMSCRIPTEN)
+			# don't download the VST3 SDK
+			set(VST3_SDK_ROOT "./dummy/vst3sdk/path")
+		else()
+			set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE)
+		endif()
 	endif()
-endif()
 
-FetchContent_Declare(
-	clap
-	GIT_REPOSITORY https://github.com/free-audio/clap.git
-	GIT_TAG 1.2.6
-	GIT_SHALLOW ON
-)
-FetchContent_Declare(
-	clap-wrapper
-	GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
-	GIT_TAG v0.13.0
-	GIT_SHALLOW ON
-)
-FetchContent_MakeAvailable(clap clap-wrapper)
+	FetchContent_Declare(
+		clap
+		GIT_REPOSITORY https://github.com/free-audio/clap.git
+		GIT_TAG 1.2.6
+		GIT_SHALLOW ON
+	)
+	FetchContent_Declare(
+		clap-wrapper
+		GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
+		GIT_TAG v0.13.0
+		GIT_SHALLOW ON
+	)
+	FetchContent_MakeAvailable(clap clap-wrapper)
+endif()
 
 ################ The actual plugin(s)
 
-add_library(${CLAP_NAME}_static STATIC)
-target_compile_definitions(${CLAP_NAME}_static PRIVATE
-	CLAP_BUNDLE_ID=${CLAP_BUNDLE_ID}
-	CLAP_BUNDLE_VERSION=${CMAKE_PROJECT_VERSION}
-)
-target_link_libraries(${CLAP_NAME}_static PUBLIC
-	${CLAP_LINK_LIBRARIES}
-)
-target_sources(${CLAP_NAME}_static PRIVATE
-	${CLAP_SOURCES}
-)
-make_clapfirst_plugins(
-	TARGET_NAME ${CLAP_NAME}
-	IMPL_TARGET ${CLAP_NAME}_static
+if (PROJECT_IS_TOP_LEVEL)
+	add_library(${CLAP_NAME}_static STATIC)
+	target_compile_definitions(${CLAP_NAME}_static PRIVATE
+		CLAP_BUNDLE_ID=${CLAP_BUNDLE_ID}
+		CLAP_BUNDLE_VERSION=${CMAKE_PROJECT_VERSION}
+	)
+	target_link_libraries(${CLAP_NAME}_static PUBLIC
+		clap signalsmith-clap-base
+	)
+	target_sources(${CLAP_NAME}_static PRIVATE
+		${CLAP_SOURCES}
+	)
+	make_clapfirst_plugins(
+		TARGET_NAME ${CLAP_NAME}
+		IMPL_TARGET ${CLAP_NAME}_static
 
-	RESOURCE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/resources"
+		RESOURCE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/resources"
 
-	OUTPUT_NAME "${CLAP_NAME}"
-	ENTRY_SOURCE ${CMAKE_CURRENT_LIST_DIR}/source/clap_entry.cpp
+		OUTPUT_NAME "${CLAP_NAME}"
+		ENTRY_SOURCE ${CMAKE_CURRENT_LIST_DIR}/source/clap_entry.cpp
 
-	BUNDLE_IDENTIFIER "${CLAP_BUNDLE_ID}"
-	BUNDLE_VERSION ${CMAKE_PROJECT_VERSION}
-	WINDOWS_FOLDER_VST3 TRUE
+		BUNDLE_IDENTIFIER "${CLAP_BUNDLE_ID}"
+		BUNDLE_VERSION ${CMAKE_PROJECT_VERSION}
+		WINDOWS_FOLDER_VST3 TRUE
 
-	PLUGIN_FORMATS CLAP VST3 WCLAP # AUV2
-	COPY_AFTER_BUILD FALSE
+		PLUGIN_FORMATS CLAP VST3 WCLAP # AUV2
+		COPY_AFTER_BUILD FALSE
 
-	#AUV2_MANUFACTURER_NAME "Signalsmith Audio"
-	#AUV2_MANUFACTURER_CODE "SigA"
-	#AUV2_SUBTYPE_CODE "BdDt"
-	#AUV2_INSTRUMENT_TYPE "aufx"
-)
+		#AUV2_MANUFACTURER_NAME "Signalsmith Audio"
+		#AUV2_MANUFACTURER_CODE "SigA"
+		#AUV2_SUBTYPE_CODE "BdDt"
+		#AUV2_INSTRUMENT_TYPE "aufx"
+	)
+endif()
