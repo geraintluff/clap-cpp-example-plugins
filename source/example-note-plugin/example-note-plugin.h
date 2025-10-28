@@ -223,6 +223,8 @@ struct ExampleNotePlugin {
 				if (note.state == NoteManager::stateDown || note.state == NoteManager::stateLegato) {
 					outNote.noteId = int32_t(noteIdCounter++);
 					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
+					double vIn = note.velocity, vRand = unitReal(randomEngine);
+					double velocity = vIn*vRand/(1 - vIn - vRand + 2*vIn*vRand);
 					clap_event_note event{
 						.header={
 							.size=sizeof(clap_event_note),
@@ -235,7 +237,7 @@ struct ExampleNotePlugin {
 						.port_index=note.port,
 						.channel=note.channel,
 						.key=note.baseKey,
-						.velocity=unitReal(randomEngine)
+						.velocity=velocity
 					};
 					eventsOut->try_push(eventsOut, &event.header);
 				} else if (note.state == NoteManager::stateUp) {
@@ -438,18 +440,11 @@ struct ExampleNotePlugin {
 	std::atomic_flag sentWebviewState = ATOMIC_FLAG_INIT;
 	
 	int32_t webviewGetUri(char *uri, uint32_t uri_capacity) {
-		static constexpr const char *path = "/example-note-effect/index.html";
-		std::string fileUrl = "file://" + clapBundleResourceDir + path;
-#ifdef WIN32
-		for (auto &c : fileUrl) if (c == '\\') c = '/';
-#endif
-fileUrl ="/";
-		std::strncpy(uri, fileUrl.c_str(), uri_capacity);
-		return int32_t(fileUrl.size());
+		if (uri) std::strncpy(uri, "/", uri_capacity);
+		return 1;
 	}
 	
 	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream) {
-LOG_EXPR(path);
 		strncpy(mediaType, "text/html;charset=utf-8", mediaTypeCapacity);
 		std::string html = "Random number: " + std::to_string(unitReal(randomEngine));
 		return signalsmith::clap::writeAllToStream(html, stream);
