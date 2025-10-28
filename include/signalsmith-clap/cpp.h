@@ -6,14 +6,16 @@
 #include <string>
 #include <vector>
 
-// ---- clapPluginMethod(): make a plain-C function which calls a C++ method ----
+namespace signalsmith { namespace clap {
+
+// ---- pluginMethod(): make a plain-C function which calls a C++ method ----
 
 template <typename T>
 struct ClapPluginMethodHelper;
 
 // Returns a plain-C function which calls a given C++ method
 template<auto methodPtr>
-auto clapPluginMethod() {
+auto pluginMethod() {
 	using C = ClapPluginMethodHelper<decltype(methodPtr)>;
 	return C::template callMethod<methodPtr>;
 }
@@ -56,11 +58,6 @@ bool readAllFromStream(Container &byteContainer, const clap_istream *istream, si
 	}
 }
 
-template<class Container>
-bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
-	return writeAllToStream((const void *)c.data(), c.size()*sizeof(c[0]), ostream);
-}
-
 inline bool writeAllToStream(const void *buffer, size_t length, const clap_ostream *ostream) {
 	size_t index = 0;
 	while (length > index) {
@@ -70,3 +67,10 @@ inline bool writeAllToStream(const void *buffer, size_t length, const clap_ostre
 	}
 	return true;
 }
+
+template<class Container>
+bool writeAllToStream(const Container &c, const clap_ostream *ostream) {
+	return writeAllToStream((const void *)c.data(), c.size()*sizeof(c[0]), ostream);
+}
+
+}} // namespace

@@ -1,18 +1,18 @@
 #include "clap/clap.h"
 
-#include "../plugins.h"
-// Helpers for concisely using CLAP from C++
-#include "../clap-cpp-tools.h"
+#include "signalsmith-clap/cpp.h"
 
 #include "signalsmith-basics/chorus.h"
 #include "cbor-walker/cbor-walker.h"
 #include "webview-gui/webview-gui.h"
 
+#include "../plugins.h"
+
 #include <atomic>
 
 struct ExampleAudioPlugin {
 	using Plugin = ExampleAudioPlugin;
-	
+
 	static const clap_plugin_descriptor * getPluginDescriptor() {
 		static const char * features[] = {
 			CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
@@ -134,7 +134,13 @@ struct ExampleAudioPlugin {
 		depthMs.formatString = "%.1f ms";
 		detune.formatString = "%.0f cents";
 	}
-	
+
+	// Makes a C function pointer to a C++ method
+	template<auto methodPtr>
+	auto clapPluginMethod() -> decltype(signalsmith::clap::pluginMethod<methodPtr>()) {
+		return signalsmith::clap::pluginMethod<methodPtr>();
+	}
+
 	const clap_plugin clapPlugin{
 		.desc=getPluginDescriptor(),
 		.plugin_data=this,
@@ -151,6 +157,7 @@ struct ExampleAudioPlugin {
 	};
 
 	bool pluginInit() {
+		using namespace signalsmith::clap;
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
 		getHostExtension(host, CLAP_EXT_PARAMS, hostParams);
@@ -294,11 +301,11 @@ struct ExampleAudioPlugin {
 			cbor.addInt(param->info.id); // CBOR keys can be any type
 			cbor.addFloat(param->value);
 		}
-		return writeAllToStream(bytes, stream);
+		return signalsmith::clap::writeAllToStream(bytes, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
 		std::vector<unsigned char> bytes;
-		if (!readAllFromStream(bytes, stream) || bytes.empty()) return false;
+		if (!signalsmith::clap::readAllFromStream(bytes, stream) || bytes.empty()) return false;
 
 		using Cbor = signalsmith::cbor::CborWalker;
 		Cbor cbor{bytes};
@@ -407,6 +414,7 @@ struct ExampleAudioPlugin {
 	}
 	bool guiCreate(const char *api, bool isFloating) {
 		if (isFloating) return false;
+		if (webview) return true; // already created before
 		webview = WebviewGui::createUnique(clapApiToPlatform(api), "/", [this](const char *path, WebviewGui::Resource &resource){
 			return webviewGetResource(path, resource);
 		});
@@ -420,7 +428,10 @@ struct ExampleAudioPlugin {
 		}
 		return bool(webview);
 	}
-	void guiDestroy() {}
+	void guiDestroy() {
+		// We *could* skip this, and retain the webview indefinitely
+		webview = nullptr;
+	}
 	bool guiSetScale(double scale) {
 		return true;
 	}

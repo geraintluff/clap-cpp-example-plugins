@@ -5,6 +5,8 @@
 #include <vector>
 #include <optional>
 
+namespace signalsmith { namespace clap {
+
 /* This helper handles CLAP note events, and returns "note tasks", which are sub-blocks for processing each note.  A note's tasks will have a consistent `voiceIndex` (up to the specified polyphony), exclusive to that note it's `.stop()`ed or stolen.
 
 When you hand it an event (and it returns `true`), it returns tasks to process any affected notes up to that point.  You can also request all notes be processed up to a certain block index, which should be used for completing a block, or for any sample-accurate parameter/etc. changes which affect all notes.
@@ -280,3 +282,5 @@ private:
 		}
 	}
 };
+
+}} // namespace

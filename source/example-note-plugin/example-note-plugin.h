@@ -1,12 +1,12 @@
 #include "clap/clap.h"
 
-#include "../plugins.h"
-// Helpers for concisely using CLAP from C++
-#include "../clap-cpp-tools.h"
-#include "../note-manager.h"
+#include "signalsmith-clap/cpp.h"
+#include "signalsmith-clap/note-manager.h"
 
 #include "cbor-walker/cbor-walker.h"
 #include "webview-gui/clap-webview-gui.h"
+
+#include "../plugins.h"
 
 #include <atomic>
 #include <random>
@@ -49,6 +49,7 @@ struct ExampleNotePlugin {
 		int32_t noteId;
 	};
 	std::vector<OutputNote> outputNotes;
+	using NoteManager = signalsmith::clap::NoteManager;
 	NoteManager noteManager{512};
 	double sampleRate = 1;
 
@@ -135,7 +136,13 @@ struct ExampleNotePlugin {
 	ExampleNotePlugin(const clap_host *host) : host(host) {
 		outputNotes.resize(noteManager.polyphony());
 	}
-	
+
+	// Makes a C function pointer to a C++ method
+	template<auto methodPtr>
+	auto clapPluginMethod() -> decltype(signalsmith::clap::pluginMethod<methodPtr>()) {
+		return signalsmith::clap::pluginMethod<methodPtr>();
+	}
+
 	const clap_plugin clapPlugin{
 		.desc=getPluginDescriptor(),
 		.plugin_data=this,
@@ -152,11 +159,12 @@ struct ExampleNotePlugin {
 	};
 
 	bool pluginInit() {
+		using namespace signalsmith::clap;
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
 		getHostExtension(host, CLAP_EXT_NOTE_PORTS, hostNotePorts);
 		getHostExtension(host, CLAP_EXT_PARAMS, hostParams);
-		webview.init(&clapPlugin, host, clapBundleResourceDir /* defined in plugins.h */);
+		webview.init(&clapPlugin, host, clapBundleResourceDir);
 		return true;
 	}
 	void pluginDestroy() {
@@ -310,6 +318,7 @@ struct ExampleNotePlugin {
 		} else if (!std::strcmp(extId, webview_gui::CLAP_EXT_WEBVIEW)) {
 			static const webview_gui::clap_plugin_webview ext{
 				.get_uri=clapPluginMethod<&Plugin::webviewGetUri>(),
+				.get_resource=clapPluginMethod<&Plugin::webviewGetResource>(),
 				.receive=clapPluginMethod<&Plugin::webviewReceive>(),
 			};
 			return &ext;
@@ -327,11 +336,11 @@ struct ExampleNotePlugin {
 			cbor.addInt(param->info.id); // CBOR keys can be any type
 			cbor.addFloat(param->value);
 		}
-		return writeAllToStream(bytes, stream);
+		return signalsmith::clap::writeAllToStream(bytes, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
 		std::vector<unsigned char> bytes;
-		if (!readAllFromStream(bytes, stream) || bytes.empty()) return false;
+		if (!signalsmith::clap::readAllFromStream(bytes, stream) || bytes.empty()) return false;
 
 		using Cbor = signalsmith::cbor::CborWalker;
 		Cbor cbor{bytes};
@@ -430,8 +439,20 @@ struct ExampleNotePlugin {
 	
 	int32_t webviewGetUri(char *uri, uint32_t uri_capacity) {
 		static constexpr const char *path = "/example-note-effect/index.html";
-		std::strncpy(uri, path, uri_capacity);
-		return int32_t(std::strlen(path));
+		std::string fileUrl = "file://" + clapBundleResourceDir + path;
+#ifdef WIN32
+		for (auto &c : fileUrl) if (c == '\\') c = '/';
+#endif
+fileUrl ="/";
+		std::strncpy(uri, fileUrl.c_str(), uri_capacity);
+		return int32_t(fileUrl.size());
+	}
+	
+	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream) {
+LOG_EXPR(path);
+		strncpy(mediaType, "text/html;charset=utf-8", mediaTypeCapacity);
+		std::string html = "Random number: " + std::to_string(unitReal(randomEngine));
+		return signalsmith::clap::writeAllToStream(html, stream);
 	}
 
 	bool webviewReceive(const void *bytes, uint32_t length) {

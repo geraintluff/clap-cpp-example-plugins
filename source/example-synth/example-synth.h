@@ -1,10 +1,9 @@
 #include "clap/clap.h"
 
-#include "../plugins.h"
+#include "signalsmith-clap/cpp.h"
+#include "signalsmith-clap/note-manager.h"
 
-// Helpers for concisely using CLAP from C++
-#include "../clap-cpp-tools.h"
-#include "../note-manager.h"
+#include "../plugins.h"
 
 #include <cstring>
 #include <cmath>
@@ -54,6 +53,7 @@ struct ExampleSynth {
 	const clap_host_params *hostParams = nullptr;
 
 	std::vector<Osc> oscillators;
+	using NoteManager = signalsmith::clap::NoteManager;
 	NoteManager noteManager;
 	
 	struct {
@@ -68,7 +68,13 @@ struct ExampleSynth {
 	ExampleSynth(const clap_host *host) : host(host) {
 		oscillators.resize(noteManager.polyphony());
 	}
-	
+
+	// Makes a C function pointer to a C++ method
+	template<auto methodPtr>
+	auto clapPluginMethod() -> decltype(signalsmith::clap::pluginMethod<methodPtr>()) {
+		return signalsmith::clap::pluginMethod<methodPtr>();
+	}
+
 	const clap_plugin clapPlugin{
 		.desc=getPluginDescriptor(),
 		.plugin_data=this,
@@ -85,6 +91,7 @@ struct ExampleSynth {
 	};
 
 	bool pluginInit() {
+		using namespace signalsmith::clap;
 		getHostExtension(host, CLAP_EXT_STATE, hostState);
 		getHostExtension(host, CLAP_EXT_AUDIO_PORTS, hostAudioPorts);
 		getHostExtension(host, CLAP_EXT_NOTE_PORTS, hostNotePorts);
@@ -171,11 +178,11 @@ struct ExampleSynth {
 	bool stateSave(const clap_ostream_t *stream) {
 		// very basic string serialisation
 		std::string stateString = (polyphony.value ? "P" : "M") + std::to_string(sustainDb.value);
-		return writeAllToStream(stateString, stream);
+		return signalsmith::clap::writeAllToStream(stateString, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
 		std::string stateString;
-		if (!readAllFromStream(stateString, stream) || stateString.empty()) return false;
+		if (!signalsmith::clap::readAllFromStream(stateString, stream) || stateString.empty()) return false;
 		polyphony.value = (stateString[0] == 'P' ? 1 : 0);
 		auto value = strtod(stateString.c_str() + 1, nullptr);
 		if (value >= -40 && value <= 0) {
