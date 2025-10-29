@@ -4,6 +4,7 @@
 
 #include <vector>
 #include <optional>
+#include <cmath>
 
 namespace signalsmith { namespace clap {
 
@@ -15,14 +16,18 @@ It implements voice-stealing based on time since a note's release (if released) 
 */
 struct NoteManager {
 	enum State{stateDown, stateLegato, stateContinue, stateUp, stateRelease, stateKill};
+	
+	// 2 for default MIDI, 48 for most MPE
+	double pitchWheelRange = 2;
+	struct NoteMod;
 
 	struct Note {
 		// Note info
 		size_t voiceIndex;
-		float key, velocity;
+		double key, velocity;
 		int16_t port, channel;
 		// Processing task info
-		State state = stateDown;
+		State state;
 		uint32_t processFrom, processTo;
 		
 		bool released() const {
@@ -37,6 +42,15 @@ struct NoteManager {
 			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
 			return true;
 		}
+		bool match(const clap_event_midi &clapEvent) const {
+			if (released()) return false;
+			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
+			if ((clapEvent.data[0]&0x0F) != channel) return false;
+			if ((clapEvent.data[0]&0xF0) <= 0xA0) { // 0x80: note on, 0x90: note off, 0xA0: polyphonic aftertouch
+				if (clapEvent.data[1] != baseKey) return false;
+			}
+			return true;
+		}
 		// `other` may contain wildcards (-1), but `this` must not
 		bool match(const Note &other) const {
 			if (other.noteId != -1) return noteId == other.noteId;
@@ -44,6 +58,14 @@ struct NoteManager {
 			if (other.port != -1 && other.port != port) return false;
 			if (other.channel != -1 && other.channel != channel) return false;
 			if (other.baseKey != -1 && other.baseKey != baseKey) return false;
+			return true;
+		}
+		bool match(const NoteMod &noteMod) const {
+			if (noteMod.noteId != -1) return noteId == noteMod.noteId;
+			if (released()) return false;
+			if (noteMod.port != -1 && noteMod.port != port) return false;
+			if (noteMod.channel != -1 && noteMod.channel != channel) return false;
+			if (noteMod.baseKey != -1 && noteMod.baseKey != baseKey) return false;
 			return true;
 		}
 		
@@ -60,11 +82,30 @@ struct NoteManager {
 	private:
 		friend class NoteManager;
 
-		Note(size_t voiceIndex, const clap_event_note &e) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
+		Note(size_t voiceIndex, const clap_event_note &e, State state=stateDown) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), state(state), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
+		Note(size_t voiceIndex, const clap_event_midi &e, State state=stateDown) : voiceIndex(voiceIndex), key(e.data[1]), velocity(e.data[2]/127.0), port(e.port_index), channel(e.data[0]&0x0F), state(state), processFrom(e.header.time), processTo(e.header.time), noteId(-1), baseKey(e.data[1]) {}
 		size_t age = 0; // since start/legato/up
 	};
+	struct NoteMod {
+		uint32_t time;
+		
+		clap_note_expression expression;
+		double value;
+
+		int16_t port, channel;
+		int32_t noteId;
+		int16_t baseKey;
+
+		void applyTo(Note &note) const {
+			if (expression == CLAP_NOTE_EXPRESSION_TUNING) {
+				note.key = note.baseKey + value;
+			} else {
+				LOG_EXPR(expression);
+			}
+		}
+	};
 	
-	NoteManager(size_t polyphony=64) {
+	NoteManager(size_t polyphony=64, double pitchWheelRange=2) : pitchWheelRange(pitchWheelRange) {
 		notes.reserve(polyphony);
 		tasks.reserve(polyphony);
 		for (size_t i = 0; i < polyphony; ++i) {
@@ -107,16 +148,20 @@ struct NoteManager {
 		}
 		return tasks;
 	}
-	
+
 	// Gets a note ready, but don't do anything with it yet
 	std::optional<Note> wouldStart(const clap_event_header *event) const {
-		if (event->space_id == CLAP_CORE_EVENT_SPACE_ID && event->type == CLAP_EVENT_NOTE_ON) {
+		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		if (event->type == CLAP_EVENT_NOTE_ON) {
 			auto &noteEvent = *(const clap_event_note *)event;
 			Note newNote{size_t(-1), noteEvent};
-			if (newNote.noteId < 0) {
-				newNote.noteId = -int32_t(internalNoteId);
-				if (++internalNoteId >= 0x7FFFFFFF) internalNoteId = 2;
-			}
+			if (newNote.noteId < 0) nextNoteId(newNote);
+			return {newNote};
+		} else if (event->type == CLAP_EVENT_MIDI) {
+			const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
+			if ((midiEvent.data[0]&0xF0) != 0x80) return {};
+			Note newNote{size_t(-1), midiEvent};
+			nextNoteId(newNote);
 			return {newNote};
 		}
 		return {};
@@ -178,7 +223,13 @@ struct NoteManager {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
 		if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
 			auto &noteEvent = *(const clap_event_note *)event;
-			return {Note{size_t(-1), noteEvent}}; // still includes any wildcards
+			return {Note{size_t(-1), noteEvent, stateUp}}; // still includes any wildcards
+		} else if (event->type == CLAP_EVENT_MIDI) {
+			const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
+			if ((midiEvent.data[0]&0xF0) != 0x80) return {};
+			Note newNote{size_t(-1), midiEvent, stateUp};
+			nextNoteId(newNote);
+			return {newNote};
 		}
 		return {};
 	}
@@ -194,9 +245,85 @@ struct NoteManager {
 			if (n.match(releaseNote)) {
 				addTask(n, atBlockTime);
 				n.state = stateUp;
+				n.velocity = releaseNote.velocity;
 				n.age = 0;
 				// Stop unless the note ID is a wildcard
 				if (releaseNote.noteId != -1) break;
+			}
+		}
+		return tasks;
+	}
+
+	std::optional<NoteMod> wouldModNotes(const clap_event_header *event) const {
+		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		if (event->type == CLAP_EVENT_NOTE_EXPRESSION) {
+			auto &exprEvent = *(const clap_event_note_expression *)event;
+			NoteMod noteMod{
+				.time=exprEvent.header.time,
+				.expression=exprEvent.expression_id,
+				.value=exprEvent.value,
+				.port=exprEvent.port_index,
+				.channel=exprEvent.channel,
+				.noteId=exprEvent.note_id,
+				.baseKey=exprEvent.key
+			};
+			return {noteMod};
+		} else if (event->type == CLAP_EVENT_MIDI) {
+			auto &midiEvent = *(const clap_event_midi *)event;
+			NoteMod noteMod{
+				.time=midiEvent.header.time,
+				.expression=-1,
+				.value=0,
+				.port=int16_t(midiEvent.port_index),
+				.channel=int16_t(midiEvent.data[0]&0x0F),
+				.noteId=-1,
+				.baseKey=-1
+			};
+			if ((midiEvent.data[0]&0xF0) == 0xA0) {
+				// Polyphonic aftertouch -> note pressure
+				noteMod.baseKey = midiEvent.data[1];
+				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
+				noteMod.value = midiEvent.data[2]/127.0;
+				return {noteMod};
+			} else if ((midiEvent.data[0]&0xF0) == 0xB0) {
+				// MIDI CC
+				auto cc = midiEvent.data[1];
+				noteMod.value = midiEvent.data[2]/127.0;
+				if (cc == 1) noteMod.expression = CLAP_NOTE_EXPRESSION_VIBRATO;
+				if (cc == 4) noteMod.expression = CLAP_NOTE_EXPRESSION_BRIGHTNESS; // foot pedal, why not
+				if (cc == 7) {
+					noteMod.expression = CLAP_NOTE_EXPRESSION_VOLUME;
+					noteMod.value = std::pow(midiEvent.data[2]/100.0, 5.8); // volume 0-4, with 100 -> 1
+				}
+				if (cc == 10) noteMod.expression = CLAP_NOTE_EXPRESSION_PAN;
+				if (cc == 11) noteMod.expression = CLAP_NOTE_EXPRESSION_EXPRESSION;
+				if (noteMod.expression != 1) return {noteMod};
+			} else if ((midiEvent.data[0]&0xF0) == 0xD0) {
+				// Channel aftertouch -> note pressure
+				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
+				noteMod.value = midiEvent.data[1]/127.0;
+				return {noteMod};
+			} else if ((midiEvent.data[0]&0xF0) == 0xE0) {
+				// Pitch wheel
+				noteMod.expression = CLAP_NOTE_EXPRESSION_TUNING;
+				noteMod.value = (midiEvent.data[1] + midiEvent.data[2]*128 - 0x2000)*pitchWheelRange/0x2000;
+				return {noteMod};
+			}
+			LOG_EXPR(int(midiEvent.data[0]));
+			LOG_EXPR(int(midiEvent.data[1]));
+			LOG_EXPR(int(midiEvent.data[2]));
+		}
+		return {};
+	}
+	const std::vector<Note> & modNotes(const NoteMod &noteMod) {
+		return modNotes(noteMod, noteMod.time);
+	}
+	const std::vector<Note> & modNotes(const NoteMod &noteMod, uint32_t atBlockTime) {
+		tasks.clear();
+		for (auto &n : notes) {
+			if (n.match(noteMod)) {
+				addTask(n, atBlockTime);
+				noteMod.applyTo(n);
 			}
 		}
 		return tasks;
@@ -209,6 +336,9 @@ struct NoteManager {
 		
 		auto releaseNote = wouldRelease(event);
 		if (releaseNote) return release(*releaseNote);
+		
+		auto modNote = wouldModNotes(event);
+		if (modNote) return modNotes(*modNote);
 
 		tasks.clear();
 		return tasks;
@@ -248,6 +378,11 @@ struct NoteManager {
 	
 private:
 	mutable uint32_t internalNoteId = 2;
+	void nextNoteId(Note &newNote) const {
+		newNote.noteId = -int32_t(internalNoteId);
+		if (++internalNoteId >= 0x7FFFFFFF) internalNoteId = 2;
+	}
+
 	std::vector<Note> notes;
 	std::vector<Note> tasks;
 	std::vector<size_t> voiceIndexQueue;

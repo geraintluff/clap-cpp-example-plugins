@@ -67,6 +67,7 @@ struct ExampleSynth {
 
 	ExampleSynth(const clap_host *host) : host(host) {
 		oscillators.resize(noteManager.polyphony());
+		noteManager.pitchWheelRange = 48; // MPE
 	}
 
 	// Makes a C function pointer to a C++ method
@@ -219,7 +220,7 @@ struct ExampleSynth {
 		if (index > notePortsCount(isInput)) return false; // input only
 		*info = {
 			.id=0xC0DEBA55,
-			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,
+			.supported_dialects=CLAP_NOTE_DIALECT_MIDI,//CLAP_NOTE_DIALECT_CLAP|CLAP_NOTE_DIALECT_MIDI|CLAP_NOTE_DIALECT_MIDI_MPE|CLAP_NOTE_DIALECT_MIDI2,
 			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
 			.name={'n', 'o', 't', 'e', 's'}
 		};

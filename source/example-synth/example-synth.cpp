@@ -28,67 +28,67 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 	}
 
 	auto &synthOut = process->audio_outputs[0];
-	
+	float sustainAmp = std::pow(10, sustainDb.value/20);
+
 	noteManager.startBlock();
-	auto processNoteTasks = [&](auto &tasks) {
-		float sustainAmp = std::pow(10, sustainDb.value/20);
-		
-		for (auto &note : tasks) {
-			auto &osc = oscillators[note.voiceIndex];
+	auto processNoteTask = [&](auto &note) {
+		auto &osc = oscillators[note.voiceIndex];
 
-			auto hz = 440*std::exp2((note.key - 69)/12);
-			auto targetNormFreq = hz/sampleRate;
+		auto hz = 440*std::exp2((note.key - 69)/12);
+		auto targetNormFreq = hz/sampleRate;
 
-			auto portamentoMs = 10;
-			auto portamentoSlew = 1/(portamentoMs*0.001f*sampleRate + 1);
+		auto portamentoMs = 10;
+		auto portamentoSlew = 1/(portamentoMs*0.001f*sampleRate + 1);
 
-			if (note.state == NoteManager::stateDown) {
-				// Start new note
-				osc = {};
-				osc.normFreq = targetNormFreq;
-			} else if (note.state == NoteManager::stateLegato) {
-				// Restart attack from wherever the decay got to
-				osc.attackRelease *= osc.decay;
-				osc.decay = 1;
-			}
-			
-			auto arMs = (note.released() ? 50 : 2);
-			auto arSlew = 1/(arMs*0.001f*sampleRate + 1);
-			auto targetAr = (note.released() ? 0 : note.velocity/4);
-			// decay rate
-			auto decayMs = 10 + 490*note.velocity*note.velocity;
-			auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
-			
-			auto processTo = note.processTo;
-			if (note.state == NoteManager::stateKill) { // This note is about to be stolen
-				// minimum 1ms fade-out
-				processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
-				// unless we'd hit the end of the block
-				processTo = std::min(processTo, process->frames_count);
-				
-				// Decay -60dB in the time we have
-				float samples = processTo - note.processFrom;
-				arSlew = 7/(samples + 7);
-				targetAr = 0;
-			}
-			
-			for (uint32_t i = note.processFrom; i < processTo; ++i) {
-				osc.attackRelease += (targetAr - osc.attackRelease)*arSlew;
-				osc.decay += (sustainAmp - osc.decay)*decaySlew;
-				osc.normFreq += (targetNormFreq - osc.normFreq)*portamentoSlew;
-				osc.phase += osc.normFreq;
-				auto amp = osc.attackRelease*osc.decay;
-				auto v = amp*std::sin(float(2*M_PI)*osc.phase);
-				// stereo out
-				synthOut.data32[0][i] += v;
-				synthOut.data32[1][i] += v;
-			}
-			osc.phase -= std::floor(osc.phase);
-
-			if (note.released() && osc.canStop()) {
-				noteManager.stop(note, process->out_events);
-			}
+		if (note.state == NoteManager::stateDown) {
+			// Start new note
+			osc = {};
+			osc.normFreq = targetNormFreq;
+		} else if (note.state == NoteManager::stateLegato) {
+			// Restart attack from wherever the decay got to
+			osc.attackRelease *= osc.decay;
+			osc.decay = 1;
 		}
+		
+		auto arMs = (note.released() ? 50 : 2);
+		auto arSlew = 1/(arMs*0.001f*sampleRate + 1);
+		auto targetAr = (note.released() ? 0 : note.velocity/4);
+		// decay rate
+		auto decayMs = 10 + 490*note.velocity*note.velocity;
+		auto decaySlew = 1/(decayMs*0.001f*sampleRate + 1);
+		
+		auto processTo = note.processTo;
+		if (note.state == NoteManager::stateKill) { // This note is about to be stolen
+			// minimum 1ms fade-out
+			processTo = std::max<uint32_t>(note.processTo, note.processFrom + sampleRate*0.001);
+			// unless we'd hit the end of the block
+			processTo = std::min(processTo, process->frames_count);
+			
+			// Decay -60dB in the time we have
+			float samples = processTo - note.processFrom;
+			arSlew = 7/(samples + 7);
+			targetAr = 0;
+		}
+		
+		for (uint32_t i = note.processFrom; i < processTo; ++i) {
+			osc.attackRelease += (targetAr - osc.attackRelease)*arSlew;
+			osc.decay += (sustainAmp - osc.decay)*decaySlew;
+			osc.normFreq += (targetNormFreq - osc.normFreq)*portamentoSlew;
+			osc.phase += osc.normFreq;
+			auto amp = osc.attackRelease*osc.decay;
+			auto v = amp*std::sin(float(2*M_PI)*osc.phase);
+			// stereo out
+			synthOut.data32[0][i] += v;
+			synthOut.data32[1][i] += v;
+		}
+		osc.phase -= std::floor(osc.phase);
+
+		if (note.released() && osc.canStop()) {
+			noteManager.stop(note, process->out_events);
+		}
+	};
+	auto processNoteTasks = [&](auto tasks) {
+		for (auto &task : tasks) processNoteTask(task);
 	};
 
 	auto *eventsIn = process->in_events;
@@ -112,7 +112,10 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			}
 		} else if (auto endNote = noteManager.wouldRelease(event)) {
 			processNoteTasks(noteManager.release(*endNote));
+		} else if (auto modNote = noteManager.wouldModNotes(event)) {
+			processNoteTasks(noteManager.modNotes(*modNote));
 		}
+		
 		processEvent(event);
 		eventsOut->try_push(eventsOut, event);
 	}
