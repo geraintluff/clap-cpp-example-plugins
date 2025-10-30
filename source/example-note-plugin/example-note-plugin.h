@@ -47,6 +47,7 @@ struct ExampleNotePlugin {
 	uint32_t noteIdCounter = 0;
 	struct OutputNote {
 		int32_t noteId;
+		double velocity;
 	};
 	std::vector<OutputNote> outputNotes;
 	using NoteManager = signalsmith::clap::NoteManager;
@@ -57,6 +58,7 @@ struct ExampleNotePlugin {
 		double value = 0;
 		clap_param_info info;
 		const char *formatString = "%.2f";
+		const char *key;
 		
 		// User interactions which we need to send as events to the host
 		std::atomic_flag sentValue = ATOMIC_FLAG_INIT;
@@ -65,7 +67,7 @@ struct ExampleNotePlugin {
 
 		std::atomic_flag sentUiState = ATOMIC_FLAG_INIT;
 
-		Param(const char *name, clap_id paramId, double min, double initial, double max) : value(initial) {
+		Param(const char *key, const char *name, clap_id paramId, double min, double initial, double max) : key(key), value(initial) {
 			info = {
 				.id=paramId,
 				.flags=CLAP_PARAM_IS_AUTOMATABLE,
@@ -131,7 +133,9 @@ struct ExampleNotePlugin {
 			}
 		}
 	};
-	std::array<Param *, 0> params;
+	Param log2Rate{"log2Rate", "rate (log2)", 0x01234567, 0.0, 4.0, 8.0};
+	Param velocityRand{"velocityRand", "velocity rand.", 0x12345678, 0.0, 0.5, 1.0};
+	std::array<Param *, 2> params{&log2Rate, &velocityRand};
 	
 	ExampleNotePlugin(const clap_host *host) : host(host) {
 		outputNotes.resize(noteManager.polyphony());
@@ -211,41 +215,67 @@ struct ExampleNotePlugin {
 			host->request_callback(host);
 		}
 	}
+	
+	double timeCounter = 0;
+	
 	std::uniform_real_distribution<double> unitReal{0, 1};
 	clap_process_status pluginProcess(const clap_process *process) {
-		auto *eventsOut = process->out_events;
-
 		noteManager.startBlock();
 		auto processNoteTasks = [&](auto &tasks) {
 			for (auto &note : tasks) {
 				auto &outNote = outputNotes[note.voiceIndex];
 				
+				// generate a new note ID, and store velocity
 				if (note.state == NoteManager::stateDown || note.state == NoteManager::stateLegato) {
 					outNote.noteId = int32_t(noteIdCounter++);
 					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
-					double vIn = note.velocity, vRand = unitReal(randomEngine);
-					double velocity = vIn*vRand/(1 - vIn - vRand + 2*vIn*vRand);
-					clap_event_note event{
+					outNote.velocity = note.velocity;
+				}
+			}
+		};
+		
+		double rateHz = std::exp2(log2Rate.value);
+		double retriggerProb = rateHz/sampleRate;
+		
+		auto *eventsIn = process->in_events;
+		auto *eventsOut = process->out_events;
+		uint32_t eventCount = eventsIn->size(eventsIn);
+		uint32_t blockProcessedTo = 0;
+		for (uint32_t i = 0; i <= eventCount; ++i) {
+			uint32_t eventTime = process->frames_count;
+			if (i == eventCount) {
+				processNoteTasks(noteManager.processTo(process->frames_count));
+			} else {
+				auto *event = eventsIn->get(eventsIn, i);
+				processNoteTasks(noteManager.processEvent(event, eventsOut));
+				if (event->type == CLAP_EVENT_NOTE_ON || event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
+					sendWithReplacedNoteId<clap_event_note>(event, eventsOut, true);
+				} else if (event->type == CLAP_EVENT_NOTE_EXPRESSION) {
+					sendWithReplacedNoteId<clap_event_note_expression>(event, eventsOut, true);
+				} else if (event->type == CLAP_EVENT_PARAM_VALUE) {
+					sendWithReplacedNoteId<clap_event_param_value>(event, eventsOut);
+				} else if (event->type == CLAP_EVENT_PARAM_MOD) {
+					sendWithReplacedNoteId<clap_event_param_mod>(event, eventsOut);
+				} else {
+					eventsOut->try_push(eventsOut, event);
+				}
+				processEvent(event);
+			}
+
+			auto noteCount = noteManager.activeNotes().size();
+			if (!noteCount) continue;
+			while (blockProcessedTo < eventTime) {
+				if (unitReal(randomEngine) < retriggerProb) {
+					std::uniform_int_distribution<size_t> indexDist{0, noteCount - 1};
+					size_t noteIndex = indexDist(randomEngine);
+					auto &note = noteManager.activeNotes()[noteIndex];
+					if (note.released()) continue; // TODO: not this
+					auto &outNote = outputNotes[note.voiceIndex];
+
+					clap_event_note noteEvent{
 						.header={
 							.size=sizeof(clap_event_note),
-							.time=note.processFrom,
-							.space_id=CLAP_CORE_EVENT_SPACE_ID,
-							.type=CLAP_EVENT_NOTE_ON,
-							.flags=0
-						},
-						.note_id=outNote.noteId,
-						.port_index=note.port,
-						.channel=note.channel,
-						.key=note.baseKey,
-						.velocity=velocity
-					};
-					eventsOut->try_push(eventsOut, &event.header);
-				} else if (note.state == NoteManager::stateUp) {
-					noteManager.stop(note, process->out_events);
-					clap_event_note event{
-						.header={
-							.size=sizeof(clap_event_note),
-							.time=note.processFrom,
+							.time=blockProcessedTo,
 							.space_id=CLAP_CORE_EVENT_SPACE_ID,
 							.type=CLAP_EVENT_NOTE_OFF,
 							.flags=0
@@ -254,53 +284,50 @@ struct ExampleNotePlugin {
 						.port_index=note.port,
 						.channel=note.channel,
 						.key=note.baseKey,
-						.velocity=note.velocity
+						.velocity=0
 					};
-					eventsOut->try_push(eventsOut, &event.header);
+					eventsOut->try_push(eventsOut, &noteEvent.header);
+					// pick new note ID
+					noteEvent.note_id = outNote.noteId = int32_t(noteIdCounter++);
+					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
+					// start new note
+					noteEvent.header.type = CLAP_EVENT_NOTE_ON;
+					auto randVel = 0.5 + (unitReal(randomEngine) - 0.5)*velocityRand.value;
+					noteEvent.velocity = outNote.velocity*randVel/(1 - outNote.velocity - randVel + 2*outNote.velocity*randVel);
+					eventsOut->try_push(eventsOut, &noteEvent.header);
+					// TODO: immediately send all note expression events
 				}
+				blockProcessedTo++;
 			}
-		};
+		}
 
-		auto *eventsIn = process->in_events;
-		uint32_t eventCount = eventsIn->size(eventsIn);
-		for (uint32_t i = 0; i < eventCount; ++i) {
-			auto *event = eventsIn->get(eventsIn, i);
-			if (auto newNote = noteManager.wouldStart(event)) {
-				bool foundLegato = false;
-				processNoteTasks(noteManager.start(*newNote, eventsOut));
-			} else if (auto endNote = noteManager.wouldRelease(event)) {
-				processNoteTasks(noteManager.release(*endNote));
-			} else if (auto modNote = noteManager.wouldModNotes(event)) {
-				processNoteTasks(noteManager.modNotes(*modNote));
-				clap_event_note_expression exprEvent{
-					.header={
-						.size=sizeof(clap_event_note_expression),
-						.time=event->time,
-						.space_id=CLAP_CORE_EVENT_SPACE_ID,
-						.type=CLAP_EVENT_NOTE_EXPRESSION,
-						.flags=0
-					},
-					.expression_id=modNote->expression,
-					// Others filled in below
-					.value=modNote->value
-				};
-				for (auto &n : noteManager) {
-					if (n.match(*modNote)) {
-						exprEvent.note_id = outputNotes[n.voiceIndex].noteId;
-						exprEvent.port_index = n.port;
-						exprEvent.channel = n.channel;
-						exprEvent.key = n.baseKey;
-						eventsOut->try_push(eventsOut, &exprEvent.header);
-					}
-				}
-			} else {
-				eventsOut->try_push(eventsOut, event);
+		for (size_t ni = 0; ni < noteManager.activeNotes().size(); ++ni) {
+			auto &note = noteManager.activeNotes()[ni];
+			if (note.released() && note.ageAt(process->frames_count) > sampleRate*2) {
+				noteManager.stop(note, eventsOut);
+				ni = -1;
 			}
-			processEvent(event);
 		}
 		
-		processNoteTasks(noteManager.processTo(process->frames_count));
 		return CLAP_PROCESS_CONTINUE;
+	}
+	
+	template<class ClapEvent>
+	void sendWithReplacedNoteId(const clap_event_header *event, const clap_output_events *eventsOut, bool expandWildcards=false) {
+		ClapEvent clapEvent = *(ClapEvent *)event;
+		bool wildcard = (clapEvent.note_id == -1);
+		if (wildcard && !expandWildcards) {
+			eventsOut->try_push(eventsOut, &clapEvent.header);
+			return;
+		}
+		for (auto &note : noteManager) {
+			if (note.matchEvent(clapEvent, true)) {
+				auto &outNote = outputNotes[note.voiceIndex];
+				clapEvent.note_id = outNote.noteId;
+				eventsOut->try_push(eventsOut, &clapEvent.header);
+				if (!wildcard) break;
+			}
+		}
 	}
 
 	bool stateDirty = false;
@@ -506,15 +533,11 @@ struct ExampleNotePlugin {
 		
 		cbor.forEachPair([&](Cbor key, Cbor value){
 			auto keyString = key.utf8View();
-//			if (keyString == "mix") {
-//				updateParam(mix, value);
-//			} else if (keyString == "depth") {
-//				updateParam(depthMs, value);
-//			} else if (keyString == "detune") {
-//				updateParam(detune, value);
-//			} else if (keyString == "stereo") {
-//				updateParam(stereo, value);
-//			}
+			for (auto *param : params) {
+				if (keyString == param->key) {
+					updateParam(*param, value);
+				}
+			}
 		});
 
 		if (hostParams) hostParams->request_flush(host);
@@ -528,17 +551,13 @@ struct ExampleNotePlugin {
 		signalsmith::cbor::CborWriter cbor{bytes};
 		cbor.openMap();
 		
-		auto updateParam = [&](const char *key, Param &param){
-			if (param.sentUiState.test_and_set()) return;
-			cbor.addUtf8(key);
+		for (auto *param : params) {
+			if (param->sentUiState.test_and_set()) continue;
+			cbor.addUtf8(param->key);
 			cbor.openMap(1);
 			cbor.addUtf8("value");
-			cbor.addFloat(param.value);
-		};
-//		updateParam("mix", mix);
-//		updateParam("depth", depthMs);
-//		updateParam("detune", detune);
-//		updateParam("stereo", stereo);
+			cbor.addFloat(param->value);
+		}
 		cbor.close();
 		
 		webview.send(bytes.data(), bytes.size());

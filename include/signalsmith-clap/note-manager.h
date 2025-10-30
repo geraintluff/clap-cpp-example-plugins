@@ -37,14 +37,6 @@ struct NoteManager {
 			return state == stateUp || state == stateRelease || state == stateKill;
 		}
 		
-		bool match(const clap_event_note &clapEvent) const {
-			if (clapEvent.note_id != -1) return clapEvent.note_id == noteId;
-			if (released()) return false;
-			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
-			if (clapEvent.channel >= 0 && clapEvent.channel != channel) return false;
-			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
-			return true;
-		}
 		// `other` may contain wildcards (-1), but `this` must not
 		bool match(const Note &other) const {
 			if (other.noteId != -1) return noteId == other.noteId;
@@ -60,6 +52,16 @@ struct NoteManager {
 			if (noteMod.port != -1 && noteMod.port != port) return false;
 			if (noteMod.channel != -1 && noteMod.channel != channel) return false;
 			if (noteMod.baseKey != -1 && noteMod.baseKey != baseKey) return false;
+			return true;
+		}
+		// A few different event types have the same fields, this catches all of them
+		template<class ClapEvent>
+		bool matchEvent(const ClapEvent &clapEvent, bool includeReleased=false) const {
+			if (clapEvent.note_id != -1) return clapEvent.note_id == noteId;
+			if (released() && !includeReleased) return false;
+			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
+			if (clapEvent.channel >= 0 && clapEvent.channel != channel) return false;
+			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
 			return true;
 		}
 		
