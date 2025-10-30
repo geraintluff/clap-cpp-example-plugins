@@ -45,15 +45,6 @@ struct NoteManager {
 			if (clapEvent.key >= 0 && clapEvent.key != baseKey) return false;
 			return true;
 		}
-		bool match(const clap_event_midi &clapEvent) const {
-			if (released()) return false;
-			if (clapEvent.port_index >= 0 && clapEvent.port_index != port) return false;
-			if ((clapEvent.data[0]&0x0F) != channel) return false;
-			if ((clapEvent.data[0]&0xF0) <= 0xA0) { // 0x80: note on, 0x90: note off, 0xA0: polyphonic aftertouch
-				if (clapEvent.data[1] != baseKey) return false;
-			}
-			return true;
-		}
 		// `other` may contain wildcards (-1), but `this` must not
 		bool match(const Note &other) const {
 			if (other.noteId != -1) return noteId == other.noteId;
@@ -86,7 +77,6 @@ struct NoteManager {
 		friend class NoteManager;
 
 		Note(size_t voiceIndex, const clap_event_note &e, State state=stateDown) : voiceIndex(voiceIndex), key(e.key), velocity(e.velocity), port(e.port_index), channel(e.channel), state(state), processFrom(e.header.time), processTo(e.header.time), noteId(e.note_id), baseKey(e.key) {}
-		Note(size_t voiceIndex, const clap_event_midi &e, State state=stateDown) : voiceIndex(voiceIndex), key(e.data[1]), velocity(e.data[2]/127.0), port(e.port_index), channel(e.data[0]&0x0F), state(state), processFrom(e.header.time), processTo(e.header.time), noteId(-1), baseKey(e.data[1]) {}
 		size_t age = 0; // since start/legato/up
 	};
 	struct NoteMod {
@@ -121,7 +111,7 @@ struct NoteManager {
 	void reset() {
 		notes.clear();
 		tasks.clear();
-		for (auto &channel : midi1ChannelNoteExpressions) {
+		for (auto &channel : channelNoteExpressions) {
 			channel = {
 				1.0, // volume
 				0.5, // pan
@@ -164,18 +154,12 @@ struct NoteManager {
 	// Gets a note ready, but don't do anything with it yet
 	std::optional<Note> wouldStart(const clap_event_header *event) const {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		event = translateEvent(event);
 		if (event->type == CLAP_EVENT_NOTE_ON) {
 			auto &noteEvent = *(const clap_event_note *)event;
 			Note newNote{size_t(-1), noteEvent};
 			if (newNote.noteId < 0) nextNoteId(newNote);
-			applyMidi1NoteExpressions(newNote);
-			return {newNote};
-		} else if (event->type == CLAP_EVENT_MIDI) {
-			const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
-			if ((midiEvent.data[0]&0xF0) != 0x80) return {};
-			Note newNote{size_t(-1), midiEvent};
-			nextNoteId(newNote);
-			applyMidi1NoteExpressions(newNote);
+			applyChannelNoteExpressions(newNote);
 			return {newNote};
 		}
 		return {};
@@ -235,15 +219,10 @@ struct NoteManager {
 
 	std::optional<Note> wouldRelease(const clap_event_header *event) const {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		event = translateEvent(event);
 		if (event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
 			auto &noteEvent = *(const clap_event_note *)event;
 			return {Note{size_t(-1), noteEvent, stateUp}}; // still includes any wildcards
-		} else if (event->type == CLAP_EVENT_MIDI) {
-			const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
-			if ((midiEvent.data[0]&0xF0) != 0x80) return {};
-			Note newNote{size_t(-1), midiEvent, stateUp};
-			nextNoteId(newNote);
-			return {newNote};
 		}
 		return {};
 	}
@@ -270,6 +249,7 @@ struct NoteManager {
 
 	std::optional<NoteMod> wouldModNotes(const clap_event_header *event) const {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+		event = translateEvent(event);
 		if (event->type == CLAP_EVENT_NOTE_EXPRESSION) {
 			auto &exprEvent = *(const clap_event_note_expression *)event;
 			NoteMod noteMod{
@@ -282,54 +262,6 @@ struct NoteManager {
 				.baseKey=exprEvent.key
 			};
 			return {noteMod};
-		} else if (event->type == CLAP_EVENT_MIDI) {
-			auto &midiEvent = *(const clap_event_midi *)event;
-			unsigned char channel = midiEvent.data[0]&0x0F;
-			unsigned char eventType = midiEvent.data[0]&0xF0;
-			NoteMod noteMod{
-				.time=midiEvent.header.time,
-				.expression=-1,
-				.value=0,
-				.port=int16_t(midiEvent.port_index),
-				.channel=int16_t(channel),
-				.noteId=-1,
-				.baseKey=-1
-			};
-			if (eventType == 0xA0) {
-				// Polyphonic aftertouch -> note pressure
-				noteMod.baseKey = midiEvent.data[1];
-				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
-				noteMod.value = midiEvent.data[2]/127.0;
-				return {noteMod};
-			} else if (eventType == 0xB0) {
-				// MIDI CC
-				auto cc = midiEvent.data[1];
-				noteMod.value = midiEvent.data[2]/127.0;
-				if (cc == 1) noteMod.expression = CLAP_NOTE_EXPRESSION_VIBRATO;
-				if (cc == 4) noteMod.expression = CLAP_NOTE_EXPRESSION_BRIGHTNESS; // foot pedal, why not
-				if (cc == 7) {
-					noteMod.expression = CLAP_NOTE_EXPRESSION_VOLUME;
-					noteMod.value = std::pow(midiEvent.data[2]/100.0, 5.8); // volume 0-4, with 100 -> 1
-				}
-				if (cc == 10) noteMod.expression = CLAP_NOTE_EXPRESSION_PAN;
-				if (cc == 11) noteMod.expression = CLAP_NOTE_EXPRESSION_EXPRESSION;
-				if (noteMod.expression != -1) {
-					return {noteMod};
-				}
-			} else if (eventType == 0xD0) {
-				// Channel aftertouch -> note pressure
-				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
-				noteMod.value = midiEvent.data[1]/127.0;
-				return {noteMod};
-			} else if (eventType == 0xE0) {
-				// Pitch wheel
-				noteMod.expression = CLAP_NOTE_EXPRESSION_TUNING;
-				noteMod.value = (midiEvent.data[1] + midiEvent.data[2]*128 - 0x2000)*pitchWheelRange/0x2000;
-				return {noteMod};
-			}
-			LOG_EXPR(int(midiEvent.data[0]));
-			LOG_EXPR(int(midiEvent.data[1]));
-			LOG_EXPR(int(midiEvent.data[2]));
 		}
 		return {};
 	}
@@ -339,8 +271,8 @@ struct NoteManager {
 	const std::vector<Note> & modNotes(const NoteMod &noteMod, uint32_t atBlockTime) {
 		tasks.clear();
 		if (noteMod.noteId == -1 && noteMod.baseKey == -1 && noteMod.channel >= 0 && noteMod.channel < 16) {
-			// CCs generally aren't our problem, but if we're translating these MPE ones to note expressions then we should store them for the case when notes start after the CCs
-			midi1ChannelNoteExpressions[noteMod.channel][noteMod.expression] = noteMod.value;
+			// We're generally not tracking CC state, but if we're translating MPE to note expressions then we store them for the case when notes start after the CCs
+			channelNoteExpressions[noteMod.channel][noteMod.expression] = noteMod.value;
 		}
 		for (auto &n : notes) {
 			if (n.match(noteMod)) {
@@ -408,19 +340,6 @@ private:
 	std::vector<Note> notes;
 	std::vector<Note> tasks;
 	std::vector<size_t> voiceIndexQueue;
-	// MPE CCs which would get translated to note expressions
-	std::array<std::array<double, 7>, 16> midi1ChannelNoteExpressions;
-	// When a note is started via MIDI, we apply MPE-translated note expressions
-	void applyMidi1NoteExpressions(Note &note) const {
-		if (note.channel < 0 || note.channel >= 16) return;
-		note.volume = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VOLUME];
-		note.pan = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PAN];
-		note.key += midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_TUNING];
-		note.mod = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VIBRATO];
-		note.expression = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_EXPRESSION];
-		note.brightness = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_BRIGHTNESS];
-		note.pressure = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PRESSURE];
-	}
 	
 	void addTask(Note &n, uint32_t processTo, bool noStateChange=false) {
 		// Skip zero-length tasks for non-event states, or if we know that the event state isn't about to be overwritten
@@ -450,6 +369,84 @@ private:
 			};
 			eventsOut->try_push(eventsOut, &stopEvent.header);
 		}
+	}
+	
+	union {
+		mutable clap_event_note noteEvent;
+		mutable clap_event_note_expression noteExprEvent;
+	};
+
+	const clap_event_header * translateEvent(const clap_event_header *event) const {
+		if (event->type != CLAP_EVENT_MIDI) return event;
+		const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
+
+		unsigned char eventType = midiEvent.data[0]&0xF0;
+		unsigned char channel = midiEvent.data[0]&0x0F;
+		if (eventType == 0x80 || eventType == 0x90) {
+			noteEvent = {
+				.header=*event,
+				.note_id=-1,
+				.port_index=int16_t(midiEvent.port_index),
+				.channel=channel,
+				.key=int16_t(midiEvent.data[1]),
+				.velocity=midiEvent.data[2]/127.0
+			};
+			noteEvent.header.size = sizeof(noteEvent);
+			noteEvent.header.type = (eventType == 0x90 ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
+			return &noteEvent.header;
+		} else if (eventType == 0xC0) {
+			return event; // we don't handle Program Change
+		} else {
+			noteExprEvent = {
+				.header=*event,
+				.expression_id=-1,
+				.value=0,
+				.port_index=int16_t(midiEvent.port_index),
+				.channel=channel,
+				.note_id=-1,
+				.key=-1
+			};
+			noteExprEvent.header.size = sizeof(noteExprEvent);
+			noteExprEvent.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+
+			if (eventType == 0xA0) { // Polyphonic aftertouch -> note pressure
+				noteExprEvent.key = midiEvent.data[1];
+				noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_PRESSURE;
+				noteExprEvent.value = midiEvent.data[2]/127.0;
+			} else if (eventType == 0xB0) { // MIDI CC
+				auto cc = midiEvent.data[1];
+				noteExprEvent.value = midiEvent.data[2]/127.0;
+				if (cc == 1) noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_VIBRATO;
+				if (cc == 4) noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_BRIGHTNESS; // foot pedal, why not
+				if (cc == 10) noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_PAN;
+				if (cc == 11) noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_EXPRESSION;
+				if (cc == 7) {
+					noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_VOLUME;
+					noteExprEvent.value = std::pow(midiEvent.data[2]/100.0, 5.8); // volume 0-4, with CC=100 -> volume=1
+				}
+			} else if (eventType == 0xD0) { // Channel aftertouch -> note pressure
+				noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_PRESSURE;
+				noteExprEvent.value = midiEvent.data[1]/127.0;
+			} else if (eventType == 0xE0) { // Pitch wheel
+				noteExprEvent.expression_id = CLAP_NOTE_EXPRESSION_TUNING;
+				noteExprEvent.value = (midiEvent.data[1] + midiEvent.data[2]*128 - 0x2000)*pitchWheelRange/0x2000;
+			}
+			if (noteExprEvent.expression_id == -1) return event; // no translation
+			return &noteExprEvent.header;
+		}
+	}
+
+	// Default note expressions taken from MPE-translated CCs
+	std::array<std::array<double, 7>, 16> channelNoteExpressions;
+	void applyChannelNoteExpressions(Note &note) const {
+		if (note.channel < 0 || note.channel >= 16) return;
+		note.volume = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VOLUME];
+		note.pan = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PAN];
+		note.key += channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_TUNING];
+		note.mod = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VIBRATO];
+		note.expression = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_EXPRESSION];
+		note.brightness = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_BRIGHTNESS];
+		note.pressure = channelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PRESSURE];
 	}
 };
 

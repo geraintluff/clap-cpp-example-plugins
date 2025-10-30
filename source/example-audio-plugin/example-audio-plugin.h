@@ -421,7 +421,6 @@ struct ExampleAudioPlugin {
 		if (isFloating) return false;
 		if (webview) return true; // already created before
 		webview = WebviewGui::createUnique(clapApiToPlatform(api), "/", [this](const char *path, WebviewGui::Resource &resource){
-LOG_EXPR(path);
 			return webviewGetResource(path, resource);
 		});
 		if (webview) {
