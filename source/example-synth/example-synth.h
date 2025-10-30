@@ -220,7 +220,7 @@ struct ExampleSynth {
 		if (index > notePortsCount(isInput)) return false; // input only
 		*info = {
 			.id=0xC0DEBA55,
-			.supported_dialects=CLAP_NOTE_DIALECT_MIDI,//CLAP_NOTE_DIALECT_CLAP|CLAP_NOTE_DIALECT_MIDI|CLAP_NOTE_DIALECT_MIDI_MPE|CLAP_NOTE_DIALECT_MIDI2,
+			.supported_dialects=CLAP_NOTE_DIALECT_CLAP|CLAP_NOTE_DIALECT_MIDI|CLAP_NOTE_DIALECT_MIDI_MPE,
 			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
 			.name={'n', 'o', 't', 'e', 's'}
 		};

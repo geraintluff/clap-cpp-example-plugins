@@ -3,6 +3,7 @@
 #include "clap/events.h"
 
 #include <vector>
+#include <array>
 #include <optional>
 #include <cmath>
 
@@ -20,11 +21,13 @@ struct NoteManager {
 	// 2 for default MIDI, 48 for most MPE
 	double pitchWheelRange = 2;
 	struct NoteMod;
-
+	
 	struct Note {
 		// Note info
 		size_t voiceIndex;
 		double key, velocity;
+		// Note expression (possibly translated from MIDI CCs)
+		double volume = 1, pan = 0.5, mod = 0, expression = 1, brightness = 0.5, pressure = 1;
 		int16_t port, channel;
 		// Processing task info
 		State state;
@@ -108,9 +111,10 @@ struct NoteManager {
 	NoteManager(size_t polyphony=64, double pitchWheelRange=2) : pitchWheelRange(pitchWheelRange) {
 		notes.reserve(polyphony);
 		tasks.reserve(polyphony);
-		for (size_t i = 0; i < polyphony; ++i) {
-			voiceIndexQueue.push_back(polyphony - 1 - i);
-		}
+		reset();
+LOG_EXPR(sizeof(Note));
+LOG_EXPR(sizeof(Note)*polyphony);
+LOG_EXPR(sizeof(Note)*polyphony/1024);
 	}
 	
 	size_t polyphony() const {
@@ -120,10 +124,21 @@ struct NoteManager {
 	void reset() {
 		notes.clear();
 		tasks.clear();
-		auto polyphony = notes.capacity();
+		for (auto &channel : midi1ChannelNoteExpressions) {
+			channel = {
+				1.0, // volume
+				0.5, // pan
+				0.0, // tuning
+				0, // vibrato (modulation)
+				1.0, // expression
+				0.5, // brightness
+				1.0, // pressure
+			};
+		}
+
 		voiceIndexQueue.clear();
-		for (size_t i = 0; i < polyphony; ++i) {
-			voiceIndexQueue.push_back(polyphony - 1 - i);
+		for (size_t i = 0; i < polyphony(); ++i) {
+			voiceIndexQueue.push_back(polyphony() - 1 - i);
 		}
 	}
 	
@@ -156,12 +171,14 @@ struct NoteManager {
 			auto &noteEvent = *(const clap_event_note *)event;
 			Note newNote{size_t(-1), noteEvent};
 			if (newNote.noteId < 0) nextNoteId(newNote);
+			applyMidi1NoteExpressions(newNote);
 			return {newNote};
 		} else if (event->type == CLAP_EVENT_MIDI) {
 			const clap_event_midi &midiEvent = *(const clap_event_midi *)event;
 			if ((midiEvent.data[0]&0xF0) != 0x80) return {};
 			Note newNote{size_t(-1), midiEvent};
 			nextNoteId(newNote);
+			applyMidi1NoteExpressions(newNote);
 			return {newNote};
 		}
 		return {};
@@ -270,22 +287,24 @@ struct NoteManager {
 			return {noteMod};
 		} else if (event->type == CLAP_EVENT_MIDI) {
 			auto &midiEvent = *(const clap_event_midi *)event;
+			unsigned char channel = midiEvent.data[0]&0x0F;
+			unsigned char eventType = midiEvent.data[0]&0xF0;
 			NoteMod noteMod{
 				.time=midiEvent.header.time,
 				.expression=-1,
 				.value=0,
 				.port=int16_t(midiEvent.port_index),
-				.channel=int16_t(midiEvent.data[0]&0x0F),
+				.channel=int16_t(channel),
 				.noteId=-1,
 				.baseKey=-1
 			};
-			if ((midiEvent.data[0]&0xF0) == 0xA0) {
+			if (eventType == 0xA0) {
 				// Polyphonic aftertouch -> note pressure
 				noteMod.baseKey = midiEvent.data[1];
 				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
 				noteMod.value = midiEvent.data[2]/127.0;
 				return {noteMod};
-			} else if ((midiEvent.data[0]&0xF0) == 0xB0) {
+			} else if (eventType == 0xB0) {
 				// MIDI CC
 				auto cc = midiEvent.data[1];
 				noteMod.value = midiEvent.data[2]/127.0;
@@ -297,13 +316,15 @@ struct NoteManager {
 				}
 				if (cc == 10) noteMod.expression = CLAP_NOTE_EXPRESSION_PAN;
 				if (cc == 11) noteMod.expression = CLAP_NOTE_EXPRESSION_EXPRESSION;
-				if (noteMod.expression != 1) return {noteMod};
-			} else if ((midiEvent.data[0]&0xF0) == 0xD0) {
+				if (noteMod.expression != -1) {
+					return {noteMod};
+				}
+			} else if (eventType == 0xD0) {
 				// Channel aftertouch -> note pressure
 				noteMod.expression = CLAP_NOTE_EXPRESSION_PRESSURE;
 				noteMod.value = midiEvent.data[1]/127.0;
 				return {noteMod};
-			} else if ((midiEvent.data[0]&0xF0) == 0xE0) {
+			} else if (eventType == 0xE0) {
 				// Pitch wheel
 				noteMod.expression = CLAP_NOTE_EXPRESSION_TUNING;
 				noteMod.value = (midiEvent.data[1] + midiEvent.data[2]*128 - 0x2000)*pitchWheelRange/0x2000;
@@ -320,9 +341,13 @@ struct NoteManager {
 	}
 	const std::vector<Note> & modNotes(const NoteMod &noteMod, uint32_t atBlockTime) {
 		tasks.clear();
+		if (noteMod.noteId == -1 && noteMod.baseKey == -1 && noteMod.channel >= 0 && noteMod.channel < 16) {
+			// CCs generally aren't our problem, but if we're translating these MPE ones to note expressions then we should store them for the case when notes start after the CCs
+			midi1ChannelNoteExpressions[noteMod.channel][noteMod.expression] = noteMod.value;
+		}
 		for (auto &n : notes) {
 			if (n.match(noteMod)) {
-				addTask(n, atBlockTime);
+				addTask(n, atBlockTime, true);
 				noteMod.applyTo(n);
 			}
 		}
@@ -386,10 +411,23 @@ private:
 	std::vector<Note> notes;
 	std::vector<Note> tasks;
 	std::vector<size_t> voiceIndexQueue;
+	// MPE CCs which would get translated to note expressions
+	std::array<std::array<double, 7>, 16> midi1ChannelNoteExpressions;
+	// When a note is started via MIDI, we apply MPE-translated note expressions
+	void applyMidi1NoteExpressions(Note &note) const {
+		if (note.channel < 0 || note.channel >= 16) return;
+		note.volume = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VOLUME];
+		note.pan = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PAN];
+		note.key += midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_TUNING];
+		note.mod = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_VIBRATO];
+		note.expression = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_EXPRESSION];
+		note.brightness = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_BRIGHTNESS];
+		note.pressure = midi1ChannelNoteExpressions[note.channel][CLAP_NOTE_EXPRESSION_PRESSURE];
+	}
 	
-	void addTask(Note &n, uint32_t processTo) {
-		// Skip zero-length tasks for non-event states only
-		if (n.processFrom >= processTo && (n.state == stateContinue || n.state == stateRelease)) return;
+	void addTask(Note &n, uint32_t processTo, bool noStateChange=false) {
+		// Skip zero-length tasks for non-event states, or if we know that the event state isn't about to be overwritten
+		if (n.processFrom >= processTo && (noStateChange || n.state == stateContinue || n.state == stateRelease)) return;
 		n.processTo = processTo;
 		tasks.push_back(n);
 		n.age += (processTo - n.processFrom);

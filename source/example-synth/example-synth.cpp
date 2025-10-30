@@ -45,9 +45,9 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			osc = {};
 			osc.normFreq = targetNormFreq;
 		} else if (note.state == NoteManager::stateLegato) {
-			// Restart attack from wherever the decay got to
-			osc.attackRelease *= osc.decay;
-			osc.decay = 1;
+			// Partially reset attack to wherever the decay got to
+			osc.attackRelease *= std::sqrt(osc.decay);
+			osc.decay = std::sqrt(osc.decay);
 		}
 		
 		auto arMs = (note.released() ? 50 : 2);
@@ -100,11 +100,12 @@ clap_process_status ExampleSynth::pluginProcess(const clap_process *process) {
 			bool foundLegato = false;
 			if (polyphony.value == 0) {
 				for (auto &otherNote : noteManager) {
-					if (!otherNote.released() || otherNote.ageAt(event->time) < sampleRate*0.01f) {
-						processNoteTasks(noteManager.legato(*newNote, otherNote, eventsOut));
-						foundLegato = true;
-						break;
-					}
+					if (otherNote.channel != newNote->channel || otherNote.port != newNote->port) continue;
+					if (otherNote.released() && otherNote.ageAt(event->time) > sampleRate*0.01f) continue;
+					
+					processNoteTasks(noteManager.legato(*newNote, otherNote, eventsOut));
+					foundLegato = true;
+					break;
 				}
 			}
 			if (!foundLegato) {

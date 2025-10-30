@@ -239,6 +239,7 @@ struct ExampleNotePlugin {
 						.key=note.baseKey,
 						.velocity=velocity
 					};
+LOG_EXPR(event.note_id);
 					eventsOut->try_push(eventsOut, &event.header);
 				} else if (note.state == NoteManager::stateUp) {
 					noteManager.stop(note, process->out_events);
@@ -270,9 +271,33 @@ struct ExampleNotePlugin {
 				processNoteTasks(noteManager.start(*newNote, eventsOut));
 			} else if (auto endNote = noteManager.wouldRelease(event)) {
 				processNoteTasks(noteManager.release(*endNote));
+			} else if (auto modNote = noteManager.wouldModNotes(event)) {
+				processNoteTasks(noteManager.modNotes(*modNote));
+				clap_event_note_expression exprEvent{
+					.header={
+						.size=sizeof(clap_event_note_expression),
+						.time=event->time,
+						.space_id=CLAP_CORE_EVENT_SPACE_ID,
+						.type=CLAP_EVENT_NOTE_EXPRESSION,
+						.flags=0
+					},
+					.expression_id=modNote->expression,
+					// Others filled in below
+					.value=modNote->value
+				};
+				for (auto &n : noteManager) {
+					if (n.match(*modNote)) {
+						exprEvent.note_id = outputNotes[n.voiceIndex].noteId;
+						exprEvent.port_index = n.port;
+						exprEvent.channel = n.channel;
+						exprEvent.key = n.baseKey;
+						eventsOut->try_push(eventsOut, &exprEvent.header);
+					}
+				}
+			} else {
+				eventsOut->try_push(eventsOut, event);
 			}
 			processEvent(event);
-			eventsOut->try_push(eventsOut, event);
 		}
 		
 		processNoteTasks(noteManager.processTo(process->frames_count));
@@ -376,7 +401,7 @@ struct ExampleNotePlugin {
 		if (index > notePortsCount(isInput)) return false;
 		*info = {
 			.id=0xC0DEBA55,
-			.supported_dialects=CLAP_NOTE_DIALECT_CLAP,
+			.supported_dialects=CLAP_NOTE_DIALECT_CLAP|CLAP_NOTE_DIALECT_MIDI|CLAP_NOTE_DIALECT_MIDI_MPE,
 			.preferred_dialect=CLAP_NOTE_DIALECT_CLAP,
 			.name={'n', 'o', 't', 'e', 's'}
 		};

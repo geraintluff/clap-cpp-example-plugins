@@ -19,8 +19,8 @@ include(FetchContent)
 
 project(signalsmith-clap-cpp VERSION 0.1.0)
 
-set(CLAP_NAME cpp-example-plugins)
-set(CLAP_BUNDLE_ID "uk.co.signalsmith-audio.plugins.cpp-example-plugins")
+set(CLAP_NAME example-plugins)
+set(CLAP_BUNDLE_ID "uk.co.signalsmith-audio.code.signalsmith-clap.example-plugins")
 set(CLAP_LINK_LIBRARIES clap)
 
 set(CLAP_SOURCES
