@@ -112,9 +112,6 @@ struct NoteManager {
 		notes.reserve(polyphony);
 		tasks.reserve(polyphony);
 		reset();
-LOG_EXPR(sizeof(Note));
-LOG_EXPR(sizeof(Note)*polyphony);
-LOG_EXPR(sizeof(Note)*polyphony/1024);
 	}
 	
 	size_t polyphony() const {

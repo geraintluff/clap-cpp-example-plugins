@@ -1,3 +1,8 @@
+#ifndef LOG_EXPR
+#	include <iostream>
+#	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
+#endif
+
 #include "clap/clap.h"
 
 #include "signalsmith-clap/cpp.h"
@@ -416,6 +421,7 @@ struct ExampleAudioPlugin {
 		if (isFloating) return false;
 		if (webview) return true; // already created before
 		webview = WebviewGui::createUnique(clapApiToPlatform(api), "/", [this](const char *path, WebviewGui::Resource &resource){
+LOG_EXPR(path);
 			return webviewGetResource(path, resource);
 		});
 		if (webview) {
@@ -430,6 +436,7 @@ struct ExampleAudioPlugin {
 	}
 	void guiDestroy() {
 		// We *could* skip this, and retain the webview indefinitely
+		// but this is more polite since it releases memory
 		webview = nullptr;
 	}
 	bool guiSetScale(double scale) {

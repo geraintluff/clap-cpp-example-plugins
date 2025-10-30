@@ -239,7 +239,6 @@ struct ExampleNotePlugin {
 						.key=note.baseKey,
 						.velocity=velocity
 					};
-LOG_EXPR(event.note_id);
 					eventsOut->try_push(eventsOut, &event.header);
 				} else if (note.state == NoteManager::stateUp) {
 					noteManager.stop(note, process->out_events);
