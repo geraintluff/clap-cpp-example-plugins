@@ -2,6 +2,7 @@
 
 #include "signalsmith-clap/cpp.h"
 #include "signalsmith-clap/note-manager.h"
+#include "signalsmith-clap/params.h"
 
 #include "cbor-walker/cbor-walker.h"
 #include "webview-gui/clap-webview-gui.h"
@@ -53,92 +54,20 @@ struct ExampleNotePlugin {
 	using NoteManager = signalsmith::clap::NoteManager;
 	NoteManager noteManager{512};
 	double sampleRate = 1;
+	static constexpr double noteTailSeconds = 1; // Notes might get sent expression events even after release - this determines how long we check them around for
 
-	struct Param {
-		double value = 0;
-		clap_param_info info;
-		const char *formatString = "%.2f";
-		const char *key;
-		
-		// User interactions which we need to send as events to the host
-		std::atomic_flag sentValue = ATOMIC_FLAG_INIT;
-		std::atomic_flag sentGestureStart = ATOMIC_FLAG_INIT;
-		std::atomic_flag sentGestureEnd =ATOMIC_FLAG_INIT;
-
-		std::atomic_flag sentUiState = ATOMIC_FLAG_INIT;
-
-		Param(const char *key, const char *name, clap_id paramId, double min, double initial, double max) : key(key), value(initial) {
-			info = {
-				.id=paramId,
-				.flags=CLAP_PARAM_IS_AUTOMATABLE,
-				.cookie=this,
-				.name={}, // assigned below
-				.module={},
-				.min_value=min,
-				.max_value=max,
-				.default_value=initial
-			};
-			std::strncpy(info.name, name, CLAP_NAME_SIZE);
-			
-			sentValue.test_and_set();
-			sentGestureStart.test_and_set();
-			sentGestureEnd.test_and_set();
-		}
-
-		void sendEvents(const clap_output_events *outEvents) {
-			if (!sentGestureStart.test_and_set()) {
-				clap_event_param_gesture event{
-					.header={
-						.size=sizeof(clap_event_param_gesture),
-						.time=0,
-						.space_id=CLAP_CORE_EVENT_SPACE_ID,
-						.type=CLAP_EVENT_PARAM_GESTURE_BEGIN,
-						.flags=CLAP_EVENT_IS_LIVE
-					},
-					.param_id=info.id
-				};
-				outEvents->try_push(outEvents, &event.header);
-			}
-			if (!sentValue.test_and_set()) {
-				clap_event_param_value event{
-					.header={
-						.size=sizeof(clap_event_param_value),
-						.time=0,
-						.space_id=CLAP_CORE_EVENT_SPACE_ID,
-						.type=CLAP_EVENT_PARAM_VALUE,
-						.flags=CLAP_EVENT_IS_LIVE
-					},
-					.param_id=info.id,
-					.cookie=this,
-					.note_id=-1,
-					.port_index=-1,
-					.channel=-1,
-					.key=-1,
-					.value=value
-				};
-				outEvents->try_push(outEvents, &event.header);
-			}
-			if (!sentGestureEnd.test_and_set()) {
-				clap_event_param_gesture event{
-					.header={
-						.size=sizeof(clap_event_param_gesture),
-						.time=0,
-						.space_id=CLAP_CORE_EVENT_SPACE_ID,
-						.type=CLAP_EVENT_PARAM_GESTURE_END,
-						.flags=CLAP_EVENT_IS_LIVE
-					},
-					.param_id=info.id
-				};
-				outEvents->try_push(outEvents, &event.header);
-			}
-		}
-	};
-	Param log2Rate{"log2Rate", "rate (log2)", 0x01234567, 0.0, 4.0, 8.0};
+	using Param = signalsmith::clap::Param;
+	Param log2Rate{"log2Rate", "rate (log2)", 0x01234567, -2.0, 1.0, 4.0};
 	Param velocityRand{"velocityRand", "velocity rand.", 0x12345678, 0.0, 0.5, 1.0};
 	std::array<Param *, 2> params{&log2Rate, &velocityRand};
 	
 	ExampleNotePlugin(const clap_host *host) : host(host) {
 		outputNotes.resize(noteManager.polyphony());
+		log2Rate.formatFn = [](double value){
+			char text[16] = {};
+			std::snprintf(text, 15, "%.2f Hz", std::exp2(value));
+			return std::string(text);
+		};
 	}
 
 	// Makes a C function pointer to a C++ method
@@ -194,29 +123,26 @@ struct ExampleNotePlugin {
 			auto &eventParam = *(const clap_event_param_value *)event;
 			if (eventParam.cookie) {
 				// if provided, it's the parameter
-				auto &param = *(Param *)eventParam.cookie;
-				param.value = eventParam.value;
-				param.sentUiState.clear();
+				auto *param = (Param *)eventParam.cookie;
+				param->setValueFromEvent(eventParam);
 			} else {
 				// Otherwise, match the ID
 				for (auto *param : params) {
 					if (eventParam.param_id == param->info.id) {
-						param->value = eventParam.value;
-						param->sentUiState.clear();
+						param->setValueFromEvent(eventParam);
 						break;
 					}
 				}
 			}
 
-			// Request a callback so we can tell the host our state is dirty
-			stateDirty = true;
+			// Tell the host our state is dirty
+			stateIsClean.clear();
 			// Tell the UI as well
 			sentWebviewState.clear();
+			// Request a callback for both of the above
 			host->request_callback(host);
 		}
 	}
-	
-	double timeCounter = 0;
 	
 	std::uniform_real_distribution<double> unitReal{0, 1};
 	clap_process_status pluginProcess(const clap_process *process) {
@@ -262,40 +188,39 @@ struct ExampleNotePlugin {
 				processEvent(event);
 			}
 
-			auto noteCount = noteManager.activeNotes().size();
-			if (!noteCount) continue;
 			while (blockProcessedTo < eventTime) {
-				if (unitReal(randomEngine) < retriggerProb) {
-					std::uniform_int_distribution<size_t> indexDist{0, noteCount - 1};
-					size_t noteIndex = indexDist(randomEngine);
-					auto &note = noteManager.activeNotes()[noteIndex];
-					if (note.released()) continue; // TODO: not this
-					auto &outNote = outputNotes[note.voiceIndex];
+				for (auto &note : noteManager) {
+					if (note.released()) continue;
+					if (unitReal(randomEngine) < retriggerProb) {
+						if (note.released()) continue; // TODO: choose another one
+						auto &outNote = outputNotes[note.voiceIndex];
 
-					clap_event_note noteEvent{
-						.header={
-							.size=sizeof(clap_event_note),
-							.time=blockProcessedTo,
-							.space_id=CLAP_CORE_EVENT_SPACE_ID,
-							.type=CLAP_EVENT_NOTE_OFF,
-							.flags=0
-						},
-						.note_id=outNote.noteId,
-						.port_index=note.port,
-						.channel=note.channel,
-						.key=note.baseKey,
-						.velocity=0
-					};
-					eventsOut->try_push(eventsOut, &noteEvent.header);
-					// pick new note ID
-					noteEvent.note_id = outNote.noteId = int32_t(noteIdCounter++);
-					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
-					// start new note
-					noteEvent.header.type = CLAP_EVENT_NOTE_ON;
-					auto randVel = 0.5 + (unitReal(randomEngine) - 0.5)*velocityRand.value;
-					noteEvent.velocity = outNote.velocity*randVel/(1 - outNote.velocity - randVel + 2*outNote.velocity*randVel);
-					eventsOut->try_push(eventsOut, &noteEvent.header);
-					// TODO: immediately send all note expression events
+						// Stop previous note
+						clap_event_note noteEvent{
+							.header={
+								.size=sizeof(clap_event_note),
+								.time=blockProcessedTo,
+								.space_id=CLAP_CORE_EVENT_SPACE_ID,
+								.type=CLAP_EVENT_NOTE_OFF,
+								.flags=0
+							},
+							.note_id=outNote.noteId,
+							.port_index=note.port,
+							.channel=note.channel,
+							.key=note.baseKey,
+							.velocity=0
+						};
+						eventsOut->try_push(eventsOut, &noteEvent.header);
+						// pick new note ID
+						noteEvent.note_id = outNote.noteId = int32_t(noteIdCounter++);
+						if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
+						// start new note
+						noteEvent.header.type = CLAP_EVENT_NOTE_ON;
+						auto randVel = 0.5 + (unitReal(randomEngine) - 0.5)*velocityRand.value;
+						noteEvent.velocity = outNote.velocity*randVel/(1 - outNote.velocity - randVel + 2*outNote.velocity*randVel);
+						eventsOut->try_push(eventsOut, &noteEvent.header);
+						// TODO: immediately send all note expression events
+					}
 				}
 				blockProcessedTo++;
 			}
@@ -303,7 +228,7 @@ struct ExampleNotePlugin {
 
 		for (size_t ni = 0; ni < noteManager.activeNotes().size(); ++ni) {
 			auto &note = noteManager.activeNotes()[ni];
-			if (note.released() && note.ageAt(process->frames_count) > sampleRate*2) {
+			if (note.released() && note.ageAt(process->frames_count) > sampleRate*noteTailSeconds) {
 				noteManager.stop(note, eventsOut);
 				ni = -1;
 			}
@@ -330,11 +255,10 @@ struct ExampleNotePlugin {
 		}
 	}
 
-	bool stateDirty = false;
+	std::atomic_flag stateIsClean = ATOMIC_FLAG_INIT;
 	void pluginOnMainThread() {
-		if (stateDirty && hostState) {
+		if (hostState && !stateIsClean.test_and_set()) {
 			hostState->mark_dirty(host);
-			stateDirty = false;
 		}
 		webviewSendIfNeeded();
 	}
@@ -389,6 +313,7 @@ struct ExampleNotePlugin {
 			cbor.addInt(param->info.id); // CBOR keys can be any type
 			cbor.addFloat(param->value);
 		}
+		stateIsClean.test_and_set();
 		return signalsmith::clap::writeAllToStream(bytes, stream);
 	}
 	bool stateLoad(const clap_istream_t *stream) {
@@ -459,7 +384,12 @@ struct ExampleNotePlugin {
 	bool paramsValueToText(clap_id paramId, double value, char *text, uint32_t textCapacity) {
 		for (auto *param : params) {
 			if (param->info.id == paramId) {
-				std::snprintf(text, textCapacity, param->formatString, value);
+				if (param->formatFn) {
+					auto str = param->formatFn(value);
+					std::strncpy(text, str.c_str(), textCapacity);
+				} else {
+					std::snprintf(text, textCapacity, param->formatString, value);
+				}
 				return true;
 			}
 		}
@@ -491,11 +421,19 @@ struct ExampleNotePlugin {
 	std::atomic_flag sentWebviewState = ATOMIC_FLAG_INIT;
 	
 	int32_t webviewGetUri(char *uri, uint32_t uri_capacity) {
-		if (uri) std::strncpy(uri, "/", uri_capacity);
-		return 1;
+		std::string fileUrl = "file://" + clapBundleResourceDir + "/example-note-plugin/index.html";
+#ifdef WIN32
+		for (auto &c : fileUrl) {
+			if (c == '\\') c = '/';
+		}
+#endif
+		if (uri) std::strncpy(uri, fileUrl.c_str(), uri_capacity);
+		return fileUrl.size();
 	}
 	
 	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream) {
+		// Since we're using an absolute (`file:`) URL, we don't need
+		return false;
 		strncpy(mediaType, "text/html;charset=utf-8", mediaTypeCapacity);
 		std::string html = "Random number: " + std::to_string(unitReal(randomEngine));
 		return signalsmith::clap::writeAllToStream(html, stream);
@@ -522,8 +460,8 @@ struct ExampleNotePlugin {
 		
 		Cbor cbor{(const unsigned char *)bytes, length};
 		if (cbor.utf8View() == "ready") {
+			// Send everything
 			for (auto *param : params) {
-				// Resend everything
 				param->sentUiState.clear();
 			}
 			sentWebviewState.clear();
