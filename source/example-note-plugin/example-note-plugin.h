@@ -49,17 +49,19 @@ struct ExampleNotePlugin {
 	struct OutputNote {
 		int32_t noteId;
 		double velocity;
+		uint64_t timeSinceTrigger;
 	};
 	std::vector<OutputNote> outputNotes;
 	using NoteManager = signalsmith::clap::NoteManager;
 	NoteManager noteManager{512};
 	double sampleRate = 1;
-	static constexpr double noteTailSeconds = 1; // Notes might get sent expression events even after release - this determines how long we check them around for
+	static constexpr double noteTailSeconds = 1; // Notes might get sent expression events even after release - this determines how long after release we keep them in the list
 
 	using Param = signalsmith::clap::Param;
 	Param log2Rate{"log2Rate", "rate (log2)", 0x01234567, -2.0, 1.0, 4.0};
+	Param regularity{"regularity", "regularity", 0x02468ACE, 0.0, 0.5, 1.0};
 	Param velocityRand{"velocityRand", "velocity rand.", 0x12345678, 0.0, 0.5, 1.0};
-	std::array<Param *, 2> params{&log2Rate, &velocityRand};
+	std::array<Param *, 3> params{&log2Rate, &regularity, &velocityRand};
 	
 	ExampleNotePlugin(const clap_host *host) : host(host) {
 		outputNotes.resize(noteManager.polyphony());
@@ -156,12 +158,15 @@ struct ExampleNotePlugin {
 					outNote.noteId = int32_t(noteIdCounter++);
 					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
 					outNote.velocity = note.velocity;
+					outNote.timeSinceTrigger = 0;
 				}
 			}
 		};
 		
 		double rateHz = std::exp2(log2Rate.value);
-		double retriggerProb = rateHz/sampleRate;
+		double periodSamples = sampleRate/rateHz;
+		double minPeriodSamples = periodSamples*regularity.value;
+		double retriggerProb = 1/(periodSamples - minPeriodSamples + 1e-30);
 		
 		auto *eventsIn = process->in_events;
 		auto *eventsOut = process->out_events;
@@ -191,9 +196,11 @@ struct ExampleNotePlugin {
 			while (blockProcessedTo < eventTime) {
 				for (auto &note : noteManager) {
 					if (note.released()) continue;
+					auto &outNote = outputNotes[note.voiceIndex];
+					if (outNote.timeSinceTrigger++ < minPeriodSamples) continue;
+					
 					if (unitReal(randomEngine) < retriggerProb) {
-						if (note.released()) continue; // TODO: choose another one
-						auto &outNote = outputNotes[note.voiceIndex];
+						outNote.timeSinceTrigger = 0;
 
 						// Stop previous note
 						clap_event_note noteEvent{

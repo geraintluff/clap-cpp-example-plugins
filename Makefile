@@ -1,6 +1,6 @@
 .PHONY: emsdk
-all:
-	@echo "make clap-bundlenamegoeshere\nmake vst3-???\nmake dev-???\n\nWCLAP with Emscripten:\nmake wclap-"
+help:
+	@echo "\tmake clap-example-plugins\n\tmake vst3-example-plugins\n\tmake dev-example-plugins\n\nWCLAP with Emscripten:\n\tmake wclap-example-plugins"
 
 clean:
 	rm -rf out
