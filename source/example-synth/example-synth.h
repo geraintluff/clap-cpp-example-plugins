@@ -54,7 +54,7 @@ struct ExampleSynth {
 
 	std::vector<Osc> oscillators;
 	using NoteManager = signalsmith::clap::NoteManager;
-	NoteManager noteManager;
+	NoteManager noteManager{512};
 	
 	struct {
 		clap_id id = 0xCA55E77E;

@@ -148,6 +148,8 @@ struct ExampleNotePlugin {
 	
 	std::uniform_real_distribution<double> unitReal{0, 1};
 	clap_process_status pluginProcess(const clap_process *process) {
+		auto *eventsOut = process->out_events;
+
 		noteManager.startBlock();
 		auto processNoteTasks = [&](auto &tasks) {
 			for (auto &note : tasks) {
@@ -159,6 +161,8 @@ struct ExampleNotePlugin {
 					if (noteIdCounter >= 0x80000000) noteIdCounter = 0;
 					outNote.velocity = note.velocity;
 					outNote.timeSinceTrigger = 0;
+				} else if (note.released() && note.ageAt(process->frames_count) > sampleRate*noteTailSeconds) {
+					noteManager.stop(note, eventsOut);
 				}
 			}
 		};
@@ -169,7 +173,6 @@ struct ExampleNotePlugin {
 		double retriggerProb = 1/(periodSamples - minPeriodSamples + 1e-30);
 		
 		auto *eventsIn = process->in_events;
-		auto *eventsOut = process->out_events;
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		uint32_t blockProcessedTo = 0;
 		for (uint32_t i = 0; i <= eventCount; ++i) {
@@ -180,7 +183,13 @@ struct ExampleNotePlugin {
 				auto *event = eventsIn->get(eventsIn, i);
 				processNoteTasks(noteManager.processEvent(event, eventsOut));
 				if (event->type == CLAP_EVENT_NOTE_ON || event->type == CLAP_EVENT_NOTE_OFF || event->type == CLAP_EVENT_NOTE_CHOKE) {
-					sendWithReplacedNoteId<clap_event_note>(event, eventsOut, true);
+					auto eventNote = *(const clap_event_note *)event;
+					// Randomise first velocity as well
+					if (event->type == CLAP_EVENT_NOTE_ON) {
+						auto randVel = 0.5 + (unitReal(randomEngine) - 0.5)*velocityRand.value;
+						eventNote.velocity = eventNote.velocity*randVel/(1 - eventNote.velocity - randVel + 2*eventNote.velocity*randVel);
+					}
+					sendWithReplacedNoteId<clap_event_note>(&eventNote.header, eventsOut, true);
 				} else if (event->type == CLAP_EVENT_NOTE_EXPRESSION) {
 					sendWithReplacedNoteId<clap_event_note_expression>(event, eventsOut, true);
 				} else if (event->type == CLAP_EVENT_PARAM_VALUE) {
@@ -233,14 +242,6 @@ struct ExampleNotePlugin {
 			}
 		}
 
-		for (size_t ni = 0; ni < noteManager.activeNotes().size(); ++ni) {
-			auto &note = noteManager.activeNotes()[ni];
-			if (note.released() && note.ageAt(process->frames_count) > sampleRate*noteTailSeconds) {
-				noteManager.stop(note, eventsOut);
-				ni = -1;
-			}
-		}
-		
 		return CLAP_PROCESS_CONTINUE;
 	}
 	
