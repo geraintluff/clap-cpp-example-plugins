@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Virtual Keyboard GUI</title>
+		<style>
+			:root {
+				font-size: 12px;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				position: fixed;
+				top: 0;
+				left: 0;
+				width: 100vw;
+				height: 100vh;
+				overflow: none;
+				margin: 0;
+				padding: 0;
+				
+				display: grid;
+				grid-template-areas: "scroll" "keyboard";
+				grid-template-rows: 1fr calc(min(10vw, 100vh));
+			}
+			
+			#scroll, #scroll-overlay {
+				grid-area: scroll;
+				height: 100%;
+				width: 100%;
+				min-height: 0;
+				min-width: 0;
+
+				background: #000;
+			}
+			#scroll-overlay {
+				background: linear-gradient(#000A, #0008 10%, #5434 60%, #FFF2);
+			}
+			#keyboard, #keyboard-bg {
+				grid-area: keyboard;
+				width: 100%;
+				height: 100%;
+				min-height: 0;
+				min-width: 0;
+			}
+			#keyboard {
+				background: linear-gradient(#FFF4, #8884 2px, #0000 6px, #0000 70%, #2102);
+			}
+		</style>
+	</head>
+	<body>
+		<canvas id="scroll"></canvas>
+		<canvas id="scroll-overlay"></canvas>
+		<canvas id="keyboard-bg"></canvas>
+		<canvas id="keyboard"></canvas>
+		
+		<script src="cbor.min.js"></script>
+		<script>
+			// white-left, black, white, black, white-right
+			let blackPattern = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+			let whitePattern = [0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6, 6];
+			function keyPath(key, height, context) {
+				let blackHeight = height*0.65;
+
+				let floorKey = Math.floor(key);
+				let fracKey = key - floorKey;
+				let octKey = floorKey - (floorKey%12);
+				let whiteIndex = whitePattern[floorKey%12];
+				let isBlackP = blackPattern[(floorKey + 11)%12];
+				let isBlack = blackPattern[floorKey%12];
+				let isBlack1 = blackPattern[(floorKey + 1)%12];
+				let isBlack2 = blackPattern[(floorKey + 2)%12];
+
+				let w = 1/128, ww = w*12/7;;
+				let blackX = w*floorKey;
+				let whiteX = w*octKey + ww*whiteIndex; // x position of either current key (if white) or next
+				let heightA = (isBlack) ? blackHeight : height;
+				let heightB = (isBlack1) ? blackHeight : height;
+				let vf = fracKey*fracKey*(3 - 2*fracKey);
+				vf *= vf*(3 - 2*vf);
+				let whiteHeight = heightA + (heightB - heightA)*vf;
+				
+				let t0a = blackX, t0b = t0a + w;
+				let t1a = t0b, t1b = t0b + w;
+				let b0a = whiteX, b0b = whiteX + ww;
+				let b1a = b0b, b1b = b0b + ww;
+
+				if (isBlack) {
+					b0b = b0a;
+					b1b = b1a;
+				} else if (isBlack1) {
+					b0b = b0a;
+					b1b = b1a;
+				}
+
+				if (!isBlack && !isBlack1) {
+					t1a = b1a;
+					t0b = b0b;
+				} else if (!isBlack && !isBlackP) {
+					t0a = b0a;
+				} else if (!isBlack1 && !isBlack2) {
+					t1b = b1b;
+				}
+
+				if (isBlack) {
+					b1a = t1a;
+				} else if (isBlack1) {
+					b0b = t0b;
+				}
+
+				context.beginPath();
+				context.lineTo(b0a + (b0b - b0a)*fracKey, whiteHeight);
+				context.lineTo(b0a + (b0b - b0a)*fracKey, blackHeight);
+				context.lineTo(t0a + (t0b - t0a)*fracKey, blackHeight);
+				context.lineTo(t0a + (t0b - t0a)*fracKey, 0);
+				context.lineTo(t1a + (t1b - t1a)*fracKey, 0);
+				context.lineTo(t1a + (t1b - t1a)*fracKey, blackHeight);
+				context.lineTo(b1a + (b1b - b1a)*fracKey, blackHeight);
+				context.lineTo(b1a + (b1b - b1a)*fracKey, whiteHeight);
+				context.closePath();
+
+				return isBlack + (isBlack1 - isBlack)*fracKey;
+			}
+			function getContext(canvas) {
+				let targetWidth = Math.round(canvas.offsetWidth*window.devicePixelRatio);
+				if (canvas.width != targetWidth) canvas.width = targetWidth;
+				let targetHeight = Math.round(canvas.offsetHeight*window.devicePixelRatio);
+				if (canvas.height != targetHeight) canvas.height = targetHeight;
+				return canvas.getContext('2d');
+			}
+			function getKeyboardContext(canvas) {
+				let context = getContext(canvas);
+				context.resetTransform();
+				context.scale(canvas.width, canvas.width);
+				return context;
+			}
+			function drawKeyboardBg() {
+				let canvas = document.querySelector('#keyboard-bg');
+				let height = canvas.height/canvas.width;
+
+				let context = getKeyboardContext(canvas);
+				context.lineWidth = 0.0012;
+				context.lineJoin = 'round';
+				context.strokeStyle = '#000';
+				for (let key = 0; key <= 127; ++key) {
+					let blackKey = keyPath(key, height, context);
+
+					let c = Math.round(255*key/127);
+					context.fillStyle = (blackKey > 0.5) ? '#333' : '#FFF';
+					context.fill();
+					context.stroke();
+				}
+			}
+			function drawKeys(keys) {
+				let canvas = document.querySelector('#keyboard');
+				let height = canvas.height/canvas.width;
+								
+				let context = getKeyboardContext(canvas);
+				context.clearRect(0, 0, canvas.width, canvas.height);
+				keys.forEach(key => {
+					let c = Math.round(255*key.hue);
+					let c2 = Math.round(64 + 128*4*key.hue*(1 - key.hue));
+					context.fillStyle = `rgba(${c}, ${c2}, ${255 - c}, 1)`;
+
+					keyPath(key.key, height, context);
+					context.fill();
+				});
+			}
+
+			function drawScrollBg() {
+				let canvas = document.querySelector('#scroll-overlay');
+				canvas.width = canvas.width; // clear it
+
+				let context = getKeyboardContext(canvas);
+				context.strokeStyle = '#FFF2';
+				context.lineWidth = 0.0005;
+				for (let k = 0; k <= 128; ++k) {
+					let x = k/128;
+					context.beginPath();
+					context.lineTo(x, 0);
+					context.lineTo(x, canvas.height);
+					context.stroke();
+				}
+				context.fillStyle = '#FFF1';
+				for (let k = 0; k <= 128; k += 12) {
+					let x = k/128, w = 1/128;
+					context.fillRect(x, 0, w, canvas.height);
+					context.fill();
+				}
+			}
+			let scrollSpeed = 0.1;
+			let prevFrameTime = 0;
+			function scrollKeys(seconds, keys) {
+				let ms = (seconds - prevFrameTime)*1000;
+				prevFrameTime = seconds;
+				let height = Math.ceil(window.devicePixelRatio*ms*scrollSpeed);
+
+				let canvas = document.querySelector('#scroll');
+				let context = getContext(canvas);
+				context.fillStyle = '#000';
+				context.fillRect(0, canvas.height - height, canvas.width, height);
+				context.globalCompositeOperation = 'lighter';
+				keys.forEach(key => {
+					let c = Math.round(255*key.hue);
+					let c2 = Math.round(64 + 128*4*key.hue*(1 - key.hue));
+					context.fillStyle = `rgba(${c}, ${c2}, ${255 - c}, 1)`;
+					
+					let w = canvas.width/128;
+					let x0 = w*key.key;
+					context.fillRect(x0, canvas.height - height, w, height);
+				});
+				context.globalCompositeOperation = 'source-over';
+
+				context.drawImage(canvas, 0, -height);
+			}
+			
+			function reset() {
+				drawKeyboardBg();
+				drawScrollBg();
+			}
+			reset();
+			addEventListener('resize', reset);
+			addEventListener('DOMContentLoaded', reset);
+
+			let startNow = Date.now();
+			requestAnimationFrame(function frame() {
+				let keys = [];
+				for (let k = 0; k < 6; ++k) {
+					keys.push({
+						hue: k/5,
+						key: Math.round(64 + 60*Math.cos(Date.now()*0.0001*(k + 0.5)))
+					});
+				}
+				drawKeys(keys);
+				scrollKeys(Date.now()/1000, keys);
+				requestAnimationFrame(frame);
+			});
+		</script>
+	</body>
+</html>
