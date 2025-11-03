@@ -419,8 +419,6 @@ struct ExampleKeyboard {
 	
 	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream) {
 		// Since we're using an absolute (`file:`) URL, we don't need this
-		// In fact, it should never get called
-		assert(false);
 		return false;
 	}
 
