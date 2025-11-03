@@ -9,6 +9,7 @@
 
 #include "./example-audio-plugin/example-audio-plugin.h"
 #include "./example-note-plugin/example-note-plugin.h"
+#include "./example-keyboard/example-keyboard.h"
 #include "./example-synth/example-synth.h"
 
 #include <cstring>
@@ -18,12 +19,13 @@ std::string clapBundleResourceDir;
 // ---- Plugin factory ----
 
 static uint32_t pluginFactoryGetPluginCount(const struct clap_plugin_factory *) {
-	return 3;
+	return 4;
 }
 static const clap_plugin_descriptor_t * pluginFactoryGetPluginDescriptor(const struct clap_plugin_factory *factory, uint32_t index) {
 	if (index == 0) return ExampleAudioPlugin::getPluginDescriptor();
 	if (index == 1) return ExampleNotePlugin::getPluginDescriptor();
-	if (index == 2) return ExampleSynth::getPluginDescriptor();
+	if (index == 2) return ExampleKeyboard::getPluginDescriptor();
+	if (index == 3) return ExampleSynth::getPluginDescriptor();
 	return nullptr;
 }
 
@@ -32,6 +34,8 @@ static const clap_plugin_t * pluginFactoryCreatePlugin(const struct clap_plugin_
 		return ExampleAudioPlugin::create(host);
 	} else if (!std::strcmp(pluginId, ExampleNotePlugin::getPluginDescriptor()->id)) {
 		return ExampleNotePlugin::create(host);
+	} else if (!std::strcmp(pluginId, ExampleKeyboard::getPluginDescriptor()->id)) {
+		return ExampleKeyboard::create(host);
 	} else if (!std::strcmp(pluginId, ExampleSynth::getPluginDescriptor()->id)) {
 		return ExampleSynth::create(host);
 	}

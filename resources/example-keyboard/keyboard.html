@@ -34,7 +34,7 @@
 				background: #000;
 			}
 			#scroll-overlay {
-				background: linear-gradient(#000A, #0008 10%, #5434 60%, #FFF2);
+				background: linear-gradient(#000A, #0008 10%, #5434 60%, #8763 80%, #FFF2);
 			}
 			#keyboard, #keyboard-bg {
 				grid-area: keyboard;
@@ -162,6 +162,7 @@
 					let c2 = Math.round(64 + 128*4*key.hue*(1 - key.hue));
 					context.fillStyle = `rgba(${c}, ${c2}, ${255 - c}, 1)`;
 
+					context.globalAlpha = Math.min(1, 0.5 + 0.5*key.brightness);
 					keyPath(key.key, height, context);
 					context.fill();
 				});
@@ -191,12 +192,15 @@
 			let scrollSpeed = 0.1;
 			let prevFrameTime = 0;
 			function scrollKeys(seconds, keys) {
-				let ms = (seconds - prevFrameTime)*1000;
+				let ms = Math.max(0, (seconds - prevFrameTime)*1000);
 				prevFrameTime = seconds;
 				let height = Math.ceil(window.devicePixelRatio*ms*scrollSpeed);
+				let attackHeight = window.devicePixelRatio*2;
 
 				let canvas = document.querySelector('#scroll');
 				let context = getContext(canvas);
+				context.drawImage(canvas, 0, -height);
+
 				context.fillStyle = '#000';
 				context.fillRect(0, canvas.height - height, canvas.width, height);
 				context.globalCompositeOperation = 'lighter';
@@ -205,13 +209,19 @@
 					let c2 = Math.round(64 + 128*4*key.hue*(1 - key.hue));
 					context.fillStyle = `rgba(${c}, ${c2}, ${255 - c}, 1)`;
 					
-					let w = canvas.width/128;
-					let x0 = w*key.key;
-					context.fillRect(x0, canvas.height - height, w, height);
+					let keyW = canvas.width/128;
+					let x = keyW*(key.key + 0.5);
+					let w2 = keyW*key.width;
+					context.globalAlpha = Math.min(1, 0.25 + 0.75*key.brightness);
+					context.fillRect(x - w2/2, canvas.height - height, w2, height);
+					context.globalAlpha = 1;
+					
+					if (key.attack) {
+						context.fillStyle = '#FFF';
+						context.fillRect(x - keyW/2, canvas.height - attackHeight, keyW, attackHeight);
+					}
 				});
 				context.globalCompositeOperation = 'source-over';
-
-				context.drawImage(canvas, 0, -height);
 			}
 			
 			function reset() {
@@ -221,20 +231,75 @@
 			reset();
 			addEventListener('resize', reset);
 			addEventListener('DOMContentLoaded', reset);
+			
+			// Send FPS messages back
+			let frameMs = 100, fpsPrevNow = 0;
+			requestAnimationFrame(function estimateFps(){
+				let now = Date.now();
+				let ms = Math.min(1000, now - fpsPrevNow);
+				fpsPrevNow = now;
 
-			let startNow = Date.now();
-			requestAnimationFrame(function frame() {
-				let keys = [];
-				for (let k = 0; k < 6; ++k) {
-					keys.push({
-						hue: k/5,
-						key: Math.round(64 + 60*Math.cos(Date.now()*0.0001*(k + 0.5)))
-					});
-				}
-				drawKeys(keys);
-				scrollKeys(Date.now()/1000, keys);
-				requestAnimationFrame(frame);
+				frameMs += (ms - frameMs)/10;
+				requestAnimationFrame(estimateFps);
 			});
+			setInterval(_ => {
+				window.parent.postMessage(CBOR.encode(1000/frameMs), '*');
+			}, 100);
+			
+			addEventListener('message', e => {
+				let data = CBOR.decode(e.data);
+				
+				if (typeof data == 'object') {
+					drawKeys(data.keys);
+					scrollKeys(data.time, data.keys);
+				}
+			});
+
+			if (/[#\?]dev/.test(location.href)) {
+				let startNow = Date.now();
+				requestAnimationFrame(function frame() {
+					let keys = [];
+					for (let k = 0; k < 6; ++k) {
+						keys.push({
+							hue: 0.5 + 0.5*Math.cos(Date.now()*0.0001*Math.PI*(k + 0.12345)),
+							brightness: 0.5 + 0.5*Math.cos(Date.now()*0.0001*Math.PI*(k + 0.25)),
+							width: 0.6 + 0.4*Math.cos(Date.now()*0.0001*Math.PI*(k + 0.35)),
+							key: Math.round(64 + 60*Math.cos(Date.now()*0.0001*(k + 0.5))),
+							attack: (Math.random() < 0.01)
+						});
+					}
+					window.parent.postMessage(CBOR.encode({
+						time: Date.now()/1000,
+						keys: keys
+					}), '*');
+					setTimeout(frame, frameMs); // simulate the observed framerate which the audio processor will use
+				});
+			}
+		</script>
+		
+		<svg height="0" style="display: none">
+			<filter id="gamma-filter">
+				<feComponentTransfer>
+					<feFuncR class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
+					<feFuncG class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
+					<feFuncB class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
+				</feComponentTransfer>
+			</filter>
+		</svg>
+		<script>
+			let bodyFilter = false;
+			function setBrightness(b) { // 0-2
+				if (!bodyFilter) {
+					document.body.style.filter = 'url(#gamma-filter)';
+					bodyFilter = true;
+				}
+				let exponent = 1.25 - 0.25*b;
+				let amplitude = Math.max(0.95, 1/exponent);
+				document.querySelectorAll('.gamma-channel').forEach(e => {
+					e.setAttribute("exponent", exponent);
+					e.setAttribute("amplitude", amplitude);
+				});
+			}
 		</script>
 	</body>
 </html>
