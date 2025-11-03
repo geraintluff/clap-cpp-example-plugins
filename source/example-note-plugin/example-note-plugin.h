@@ -429,23 +429,12 @@ struct ExampleNotePlugin {
 	std::atomic_flag sentWebviewState = ATOMIC_FLAG_INIT;
 	
 	int32_t webviewGetUri(char *uri, uint32_t uri_capacity) {
-		std::string fileUrl = "file://" + clapBundleResourceDir + "/example-note-plugin/index.html";
-#ifdef WIN32
-		for (auto &c : fileUrl) {
-			if (c == '\\') c = '/';
-		}
-#endif
-		if (uri) std::strncpy(uri, fileUrl.c_str(), uri_capacity);
-		return fileUrl.size();
+		const char *relativeUrl = "/example-note-plugin/";
+		if (uri) std::strncpy(uri, relativeUrl, uri_capacity);
+		return std::strlen(relativeUrl);
 	}
 	
-	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream) {
-		// Since we're using an absolute (`file:`) URL, we don't need
-		return false;
-		strncpy(mediaType, "text/html;charset=utf-8", mediaTypeCapacity);
-		std::string html = "Random number: " + std::to_string(unitReal(randomEngine));
-		return signalsmith::clap::writeAllToStream(html, stream);
-	}
+	bool webviewGetResource(const char *path, char *mediaType, uint32_t mediaTypeCapacity, const clap_ostream *stream);
 
 	bool webviewReceive(const void *bytes, uint32_t length) {
 		using Cbor = signalsmith::cbor::CborWalker;

@@ -31,7 +31,7 @@ dev-%: clap-%
 		&& ln -s "$(CURRENT_DIR)/out/Release/$*.clap"
 	# Symlink the bundle's Resources directory
 	pushd out/Release/$*.clap/Contents/; rm -rf Resources; ln -s "$(CURRENT_DIR)/resources" Resources
-	/Applications/REAPER.app/Contents/MacOS/REAPER -nosplash out/REAPER/$*.RPP
+	/Applications/REAPER.app/Contents/MacOS/REAPER out/REAPER/$*.RPP
 
 ####### Emscripten #######
 # This automatically installs the Emscripten SDK

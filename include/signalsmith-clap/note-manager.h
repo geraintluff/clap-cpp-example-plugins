@@ -95,7 +95,9 @@ struct NoteManager {
 			if (expression == CLAP_NOTE_EXPRESSION_TUNING) {
 				note.key = note.baseKey + value;
 			} else {
+#ifdef LOG_EXPR
 				LOG_EXPR(expression);
+#endif
 			}
 		}
 	};

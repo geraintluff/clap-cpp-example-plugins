@@ -26,6 +26,7 @@ set(CLAP_LINK_LIBRARIES clap)
 set(CLAP_SOURCES
 	${CMAKE_CURRENT_LIST_DIR}/source/plugins.cpp
 	${CMAKE_CURRENT_LIST_DIR}/source/example-audio-plugin/example-audio-plugin.cpp
+	${CMAKE_CURRENT_LIST_DIR}/source/example-note-plugin/example-note-plugin.cpp
 	${CMAKE_CURRENT_LIST_DIR}/source/example-synth/example-synth.cpp
 )
 
