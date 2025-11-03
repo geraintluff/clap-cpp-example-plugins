@@ -218,7 +218,7 @@
 					
 					if (key.attack) {
 						context.fillStyle = '#FFF';
-						context.fillRect(x - keyW/2, canvas.height - attackHeight, keyW, attackHeight);
+						context.fillRect(x - keyW/2, canvas.height - Math.max(height, attackHeight), keyW, attackHeight);
 					}
 				});
 				context.globalCompositeOperation = 'source-over';
