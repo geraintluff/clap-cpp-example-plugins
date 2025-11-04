@@ -59,10 +59,18 @@ struct ExampleNotePlugin {
 
 	using Param = signalsmith::clap::Param;
 	Param log2Rate{"log2Rate", "rate (log2)", 0x01234567, -2.0, 1.0, 4.0};
-	Param regularity{"regularity", "regularity", 0x02468ACE, 0.0, 0.5, 1.0};
+	Param regularity{"regularity", "regularity", 0x02468ACE, 0.0, 0.65, 1.0};
 	Param velocityRand{"velocityRand", "velocity rand.", 0x12345678, 0.0, 0.5, 1.0};
 	std::array<Param *, 3> params{&log2Rate, &regularity, &velocityRand};
-	
+
+	void resendAllUiState() {
+		// Send everything
+		for (auto *param : params) {
+			param->sentUiState.clear();
+		}
+		sentWebviewState.clear();
+	}
+
 	ExampleNotePlugin(const clap_host *host) : host(host) {
 		outputNotes.resize(noteManager.polyphony());
 		log2Rate.formatFn = [](double value){
@@ -338,6 +346,8 @@ struct ExampleNotePlugin {
 				}
 			}
 		});
+		resendAllUiState();
+		host->request_callback(host);
 		return true;
 	}
 
@@ -453,15 +463,12 @@ struct ExampleNotePlugin {
 					}
 				}
 			});
+			stateIsClean.clear();
 		};
 		
 		Cbor cbor{(const unsigned char *)bytes, length};
 		if (cbor.utf8View() == "ready") {
-			// Send everything
-			for (auto *param : params) {
-				param->sentUiState.clear();
-			}
-			sentWebviewState.clear();
+			resendAllUiState();
 			webviewSendIfNeeded();
 			return true;
 		}
@@ -476,6 +483,7 @@ struct ExampleNotePlugin {
 		});
 
 		if (hostParams) hostParams->request_flush(host);
+		pluginOnMainThread();
 
 		return !cbor.error();
 	}

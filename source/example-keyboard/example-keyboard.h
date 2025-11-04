@@ -193,7 +193,7 @@ struct ExampleKeyboard {
 					.key=float(note.key),
 					.hue=float(note.velocity),
 					.brightness=float(note.velocity*(2 - note.velocity)),
-					.width=0.1f + 0.9f/(ageSeconds + 1),
+					.width=0.2f + 0.8f/(ageSeconds + 1),
 					.attack=!noteSentToMeters[note.voiceIndex]
 				});
 				noteSentToMeters[note.voiceIndex] = true;

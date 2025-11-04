@@ -168,7 +168,7 @@
 				});
 			}
 
-			function drawScrollBg() {
+			function drawScrollOverlay() {
 				let canvas = document.querySelector('#scroll-overlay');
 				canvas.width = canvas.width; // clear it
 
@@ -226,7 +226,7 @@
 			
 			function reset() {
 				drawKeyboardBg();
-				drawScrollBg();
+				drawScrollOverlay();
 			}
 			reset();
 			addEventListener('resize', reset);
@@ -273,31 +273,6 @@
 						keys: keys
 					}), '*');
 					setTimeout(frame, frameMs); // simulate the observed framerate which the audio processor will use
-				});
-			}
-		</script>
-		
-		<svg height="0" style="display: none">
-			<filter id="gamma-filter">
-				<feComponentTransfer>
-					<feFuncR class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
-					<feFuncG class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
-					<feFuncB class="gamma-channel" type="gamma" exponent="1" amplitude="1" offset="0" />
-				</feComponentTransfer>
-			</filter>
-		</svg>
-		<script>
-			let bodyFilter = false;
-			function setBrightness(b) { // 0-2
-				if (!bodyFilter) {
-					document.body.style.filter = 'url(#gamma-filter)';
-					bodyFilter = true;
-				}
-				let exponent = 1.25 - 0.25*b;
-				let amplitude = Math.max(0.95, 1/exponent);
-				document.querySelectorAll('.gamma-channel').forEach(e => {
-					e.setAttribute("exponent", exponent);
-					e.setAttribute("amplitude", amplitude);
 				});
 			}
 		</script>
