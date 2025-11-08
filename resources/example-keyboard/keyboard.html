@@ -59,8 +59,10 @@
 			// white-left, black, white, black, white-right
 			let blackPattern = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
 			let whitePattern = [0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6, 6];
+			let whitePatternInv = [0, 2, 4, 5, 7, 9, 11];
+			let blackHeightRatio = 0.65;
 			function keyPath(key, height, context) {
-				let blackHeight = height*0.65;
+				let blackHeight = height*blackHeightRatio;
 
 				let floorKey = Math.floor(key);
 				let fracKey = key - floorKey;
@@ -173,7 +175,20 @@
 				canvas.width = canvas.width; // clear it
 
 				let context = getKeyboardContext(canvas);
-				context.strokeStyle = '#FFF2';
+				context.fillStyle = '#FFF1';
+				for (let k = 0; k <= 128; k += 12) {
+					let x = k/128, w = 1/128;
+					context.fillRect(x, 0, w, canvas.height);
+					context.fill();
+				}
+				context.fillStyle = '#0002';
+				for (let k = 0; k <= 128; ++k) {
+					if (!blackPattern[k%12]) continue;
+					let x = k/128, w = 1/128;
+					context.fillRect(x, 0, w, canvas.height);
+					context.fill();
+				}
+				context.strokeStyle = '#FFF1';
 				context.lineWidth = 0.0005;
 				for (let k = 0; k <= 128; ++k) {
 					let x = k/128;
@@ -181,12 +196,6 @@
 					context.lineTo(x, 0);
 					context.lineTo(x, canvas.height);
 					context.stroke();
-				}
-				context.fillStyle = '#FFF1';
-				for (let k = 0; k <= 128; k += 12) {
-					let x = k/128, w = 1/128;
-					context.fillRect(x, 0, w, canvas.height);
-					context.fill();
 				}
 			}
 			let scrollSpeed = 0.1;
@@ -219,6 +228,7 @@
 					if (key.attack) {
 						context.fillStyle = '#FFF';
 						context.fillRect(x - keyW/2, canvas.height - Math.max(height, attackHeight), keyW, attackHeight);
+						key.attack = false;
 					}
 				});
 				context.globalCompositeOperation = 'source-over';
@@ -246,13 +256,96 @@
 				window.parent.postMessage(CBOR.encode(1000/frameMs), '*');
 			}, 100);
 			
+			let outputKeys = [];
+			let inputKeys = [];
+			function redrawKeys(scrollTime) {
+				let keys = inputKeys.concat(outputKeys);
+				drawKeys(keys);
+				if (typeof scrollTime == 'number') {
+					scrollKeys(scrollTime, keys);
+				}
+			}
 			addEventListener('message', e => {
 				let data = CBOR.decode(e.data);
 				
 				if (typeof data == 'object') {
-					drawKeys(data.keys);
-					scrollKeys(data.time, data.keys);
+					inputKeys = data.keys;
+					redrawKeys(data.time);
 				}
+			});
+			
+			let pointerIds = {};
+			let keyboard = document.querySelector('#keyboard');
+			function updateKey(state, event) {
+				let x = event.offsetX/keyboard.offsetWidth, y = event.offsetY/keyboard.offsetHeight;
+				let floatKey = x*128;
+				let key = Math.floor(floatKey);
+				if (y > blackHeightRatio) {
+					let octave = key - (key%12);
+					let whiteKey = Math.floor((floatKey - octave)*7/12);
+					console.log(whiteKey);
+					key = octave + whitePatternInv[whiteKey];
+				}
+				if (blackPattern[key%12]) {
+					y /= blackHeightRatio;
+				}
+				state.key = key;
+				state.y = y;
+				
+				state.brightness = 1;
+				state.width = 1;
+			};
+			function sendKey(state, action) {
+				window.parent.postMessage(CBOR.encode({
+					id: state.id,
+					action: action,
+					key: state.key,
+					velocity: state.velocity
+				}), '*');
+			}
+			keyboard.style.touchAction = 'none'; // no pan/zoom/etc.
+			keyboard.addEventListener('pointerdown', e => {
+				keyboard.setPointerCapture(e.pointerId);
+				
+				let state = pointerIds[e.pointerId] = pointerIds[e.pointerId] || {};
+				updateKey(state, e);
+				state.id = e.pointerId;
+				state.down = true;
+				state.attack = true;
+				state.velocity = state.y;
+				state.hue = state.velocity;
+				// Standard key properties
+
+				outputKeys.push(state);
+				redrawKeys();
+				sendKey(state, "down");
+			});
+			keyboard.addEventListener('pointermove', e => {
+				let state = pointerIds[e.pointerId] = pointerIds[e.pointerId] || {};
+				let prevKey = state.key;
+				updateKey(state, e);
+				let newKey = state.key;
+				if (newKey != prevKey) {
+					state.key = prevKey;
+					sendKey(state, "up");
+					state.key = newKey;
+					sendKey(state, "down");
+				}
+				redrawKeys();
+			});
+			keyboard.addEventListener('pointerup', e => {
+				let state = pointerIds[e.pointerId] = pointerIds[e.pointerId] || {};
+				state.down = false;
+				outputKeys = Object.keys(pointerIds).map(id => pointerIds[id]).filter(s => s.down);
+				redrawKeys();
+				sendKey(state, "up");
+			});
+			keyboard.addEventListener('pointerout', e => {
+				let state = pointerIds[e.pointerId];
+				if (state?.down) sendKey(state, "up");
+				delete pointerIds[e.pointerId];
+				outputKeys = Object.keys(pointerIds).map(id => pointerIds[id]).filter(s => s.down);
+				redrawKeys();
 			});
 
 			if (/[#\?]dev/.test(location.href)) {

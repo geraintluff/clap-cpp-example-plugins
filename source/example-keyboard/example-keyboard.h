@@ -10,6 +10,7 @@
 #include "../plugins.h"
 
 #include <atomic>
+#include <mutex>
 #include <random>
 
 struct ExampleKeyboard {
@@ -118,6 +119,9 @@ struct ExampleKeyboard {
 	void pluginReset() {
 		noteManager.reset();
 		sampleCounter = 0;
+
+		std::lock_guard<std::mutex> guard{outputEventMutex}; // Not ideal if it blocks, but it's not live processing
+		outputEventQueue.clear(); // empty any old events
 	}
 	void processEvent(const clap_event_header *event) {
 		if (event->space_id != CLAP_CORE_EVENT_SPACE_ID) return;
@@ -152,11 +156,24 @@ struct ExampleKeyboard {
 	size_t sampleCounter = 0;
 	double meterTime = 0;
 	
+	std::mutex outputEventMutex;
+	std::vector<clap_event_note> outputEventQueue;
+	
 	clap_process_status pluginProcess(const clap_process *process) {
 		noteManager.startBlock();
-
 		auto *eventsIn = process->in_events;
 		auto *eventsOut = process->out_events;
+		
+		bool hasOutputEvents = outputEventMutex.try_lock(); // OK if we fail, we'll try again very soon - almost certainly faster than the UI refresh rate
+		size_t outputEventIndex = 0;
+		auto sendOutputEvents = [&](size_t toTime){
+			if (!hasOutputEvents) return;
+			while (outputEventIndex < outputEventQueue.size() && outputEventQueue[outputEventIndex].header.time <= toTime) {
+				eventsOut->try_push(eventsOut, &outputEventQueue[outputEventIndex].header);
+				++outputEventIndex;
+			}
+		};
+
 		uint32_t eventCount = eventsIn->size(eventsIn);
 		for (uint32_t i = 0; i < eventCount; ++i) {
 			auto *event = eventsIn->get(eventsIn, i);
@@ -169,6 +186,12 @@ struct ExampleKeyboard {
 			}
 			processEvent(event);
 			eventsOut->try_push(eventsOut, event);
+			sendOutputEvents(event->time);
+		}
+		sendOutputEvents(uint32_t(-1));
+		if (hasOutputEvents) {
+			outputEventQueue.clear();
+			outputEventMutex.unlock();
 		}
 
 		for (auto &noteTask : noteManager.processTo(process->frames_count)) {
@@ -432,6 +455,35 @@ struct ExampleKeyboard {
 			meterInterval = 1/fps;
 			meterStopCounter = 0.5; // send 500ms of meters before requiring another FPS update
 			if (meterIntervalCounter < -meterInterval) meterIntervalCounter = 0;
+		} else if (cbor.isMap()) {
+			clap_event_note event{
+				.header={
+					.size=sizeof(clap_event_note),
+					.time=0,
+					.space_id=CLAP_CORE_EVENT_SPACE_ID,
+					.type=CLAP_EVENT_NOTE_ON,
+					.flags=CLAP_EVENT_IS_LIVE
+				},
+				.note_id=-1,
+				.port_index=0,
+				.channel=0,
+				.key=60,
+				.velocity=0
+			};
+			cbor.forEachPair([&](Cbor key, Cbor value){
+				if (key == "id") {
+					event.note_id = value;
+				} else if (key == "action") {
+					if (value == "up") event.header.type = CLAP_EVENT_NOTE_OFF;
+				} else if (key == "key") {
+					event.key = value;
+				} else if (key == "velocity") {
+					event.velocity = value;
+				}
+			});
+			
+			std::lock_guard<std::mutex> guard{outputEventMutex}; // OK to block (if the audio thread is processing right now), this UI thread is not realtime
+			outputEventQueue.push_back(event);
 		}
 		return !cbor.error();
 	}
