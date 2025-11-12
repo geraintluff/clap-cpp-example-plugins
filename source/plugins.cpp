@@ -64,4 +64,5 @@ const void * clapEntryGetFactory(const char *factoryId) {
 		};
 		return &clapPluginFactory;
 	}
+	return nullptr;
 }

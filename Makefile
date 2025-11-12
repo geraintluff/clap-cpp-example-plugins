@@ -10,9 +10,11 @@ out/build: CMakeLists.txt
 
 clap-%: out/build
 	cmake --build out/build --target $*_clap --config Release
+	pushd out/Release/$*.clap/Contents/; rm -rf Resources; cp -r "$(CURRENT_DIR)/resources" Resources
 
 vst3-%: out/build
 	cmake --build out/build --target $*_vst3 --config Release
+	pushd out/Release/$*.vst3/Contents/; rm -rf Resources; cp -r "$(CURRENT_DIR)/resources" Resources
 
 ####### Open a test project in REAPER #######
 
@@ -54,4 +56,5 @@ out/build-emscripten: emsdk
 	$(EMSDK_ENV) emcmake cmake . -B out/build-emscripten -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=../Release -DCMAKE_BUILD_TYPE=Release
 
 wclap-%: out/build-emscripten
-	$(EMSDK_ENV) cmake --build out/build-emscripten --target $* --config Release
+	$(EMSDK_ENV) cmake --build out/build-emscripten --target $*_wclap --config Release
+	cp -r resources/* out/Release/$*.wclap/

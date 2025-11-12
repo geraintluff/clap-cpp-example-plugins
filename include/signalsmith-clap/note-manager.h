@@ -404,11 +404,11 @@ private:
 			noteExprEvent = {
 				.header=*event,
 				.expression_id=-1,
-				.value=0,
+				.note_id=-1,
 				.port_index=int16_t(midiEvent.port_index),
 				.channel=channel,
-				.note_id=-1,
-				.key=-1
+				.key=-1,
+				.value=0,
 			};
 			noteExprEvent.header.size = sizeof(noteExprEvent);
 			noteExprEvent.header.type = CLAP_EVENT_NOTE_EXPRESSION;
