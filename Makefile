@@ -58,3 +58,4 @@ out/build-emscripten: emsdk
 wclap-%: out/build-emscripten
 	$(EMSDK_ENV) cmake --build out/build-emscripten --target $*_wclap --config Release
 	cp -r resources/* out/Release/$*.wclap/
+	cd out/Release/$*.wclap/; tar --exclude=".*" -vczf ../$*.wclap.tar.gz *
