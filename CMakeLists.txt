@@ -5,6 +5,14 @@ cmake_minimum_required(VERSION 3.28)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+set(CMAKE_VERBOSE_MAKEFILE on)
+
+if(EMSCRIPTEN)
+	# Use shared memory (and atomics/etc.)
+	add_compile_options(-pthread)
+	add_link_options(-pthread)
+	# to use `wasm64` (64-bit memory), add -sMEMORY64=1
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
